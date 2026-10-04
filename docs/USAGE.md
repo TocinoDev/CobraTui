@@ -1,5 +1,10 @@
 # Uso
 
+## Paleta (`Ctrl+P`)
+
+Entrada arriba del todo. Comandos: `/themes`, `/save`, `/open`,
+`/folder`, `/new`, `/quit`. Detalle en `COMMANDS.md` y `THEMES.md`.
+
 ## Atajos
 - **Escribir** — inserta `Char` en cursor
 - **Enter** — `insert_newline` (corta línea)

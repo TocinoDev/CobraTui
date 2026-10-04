@@ -1,1 +1,14 @@
 /target
+/dist
+# Secretos y credenciales: nunca versionar
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*
+secrets*
+# Archivos temporales de los tests unitarios
+test_*.txt
+test_*.gitignore

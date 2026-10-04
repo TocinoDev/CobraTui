@@ -20,7 +20,7 @@ pub struct Buffer {
 - `insert_newline(&mut self)` — corta `left=[..x]`, `right=[x..]`, `lines[y]=left`, `insert(y+1,right)`, `y+=1, x=0`.
 - `Display` — serializa con `\n` sin intermediarios (`to_string()` via `ToString`).
 - `byte_len(&self) -> usize` — longitud en bytes sin alocar (para la status bar 60fps).
-- `from_file(path: &str) -> Result<Self>` — `read_to_string` + `new`.
+- `from_file(path: &str) -> Result<Self>` — verifica `metadata` contra `MAX_FILE_BYTES` (10 MiB) y luego `read_to_string` + `new`. Archivos gigantes se rechazan con error en vez de cargarse enteros en memoria.
 - `save(&self, path: &str) -> Result<()>` — `write(path, to_string)`.
 
 ## Detalles

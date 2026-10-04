@@ -11,6 +11,36 @@ use ratatui::{
 /// no popup. Se ve como el editor pero con mensaje centrado.
 pub struct Menu;
 
+/// Logo COBRATUI en bloques (7 filas). Fuente 5x7: mas alta que ancha
+/// porque las celdas del terminal son ~2:1. Todas las filas se rellenan
+/// al mismo ancho para que el centrado no desplace el medio (filas de
+/// 45 vs 47 se veian corridas a la derecha).
+fn logo(accent: Style) -> Vec<Line<'static>> {
+    const ROWS: [&str; 7] = [
+        " ████  ███  ████  ████    █   █████ █   █ █████",
+        "█     █   █ █   █ █   █  █ █    █   █   █   █",
+        "█     █   █ █   █ █   █ █   █   █   █   █   █",
+        "█     █   █ ████  ████  █████   █   █   █   █",
+        "█     █   █ █   █ █ █   █   █   █   █   █   █",
+        "█     █   █ █   █ █  █  █   █   █   █   █   █",
+        " ████  ███  ████  █   █ █   █   █    ███  █████",
+    ];
+    let width = ROWS
+        .iter()
+        .map(|r| r.chars().count())
+        .max()
+        .unwrap_or(0);
+    ROWS.iter()
+        .map(|r| {
+            let mut s = String::from(*r);
+            while s.chars().count() < width {
+                s.push(' ');
+            }
+            Line::from(Span::styled(s, accent))
+        })
+        .collect()
+}
+
 /// Los metodos toman `self` por consistencia con `Editor`/`Picker`
 /// aunque `Menu` aun no guarda estado.
 #[allow(clippy::unused_self)]
@@ -30,7 +60,7 @@ impl Menu {
         let inner = block.inner(area);
         f.render_widget(block, area);
 
-        let title = Style::default()
+        let logo_style = Style::default()
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD);
         let key_style = Style::default()
@@ -39,9 +69,10 @@ impl Menu {
         let desc_style = Style::default().fg(Color::Gray);
         let dim = Style::default().fg(Color::DarkGray);
 
-        let lines = vec![
+        let mut lines = vec![Line::from("")];
+        lines.extend(logo(logo_style));
+        lines.extend(vec![
             Line::from(""),
-            Line::from(Span::styled("CobraTUI", title)),
             Line::from(Span::styled("Fast terminal text editor", dim)),
             Line::from(""),
             Line::from(vec![
@@ -65,7 +96,7 @@ impl Menu {
                 Span::styled("Esc     ", key_style),
                 Span::styled("Salir", desc_style),
             ]),
-        ];
+        ]);
 
         let p = Paragraph::new(lines)
             .alignment(Alignment::Center)
@@ -115,6 +146,10 @@ impl Menu {
                 Span::styled("Tab     ", key_style),
                 Span::styled("Cambiar foco", desc_style),
             ]),
+            Line::from(vec![
+                Span::styled("Ctrl+P  ", key_style),
+                Span::styled("Comandos (/themes…)", desc_style),
+            ]),
             Line::from(""),
             Line::from(vec![
                 Span::styled("Ctrl+K  ", key_style),
@@ -150,6 +185,45 @@ impl Menu {
             KeyCode::Enter => Some(true),
             KeyCode::Esc => Some(false),
             _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::logo;
+    use ratatui::style::{Color, Modifier, Style};
+
+    #[test]
+    fn test_logo_bloques_proporcionado() {
+        let style = Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD);
+        let lines = logo(style);
+        assert_eq!(lines.len(), 7);
+        // Todas las filas con el mismo ancho: si no, el centrado
+        // desplaza las mas angostas (bug visto abajo a la derecha).
+        let widths: Vec<usize> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.chars().count()).sum())
+            .collect();
+        assert!(
+            (30..=48).contains(&widths[0]),
+            "ancho logo: {}",
+            widths[0]
+        );
+        assert!(
+            widths.iter().all(|w| *w == widths[0]),
+            "filas desparejas: {widths:?}"
+        );
+        for line in &lines {
+            for s in &line.spans {
+                assert!(
+                    s.content.chars().all(|c| c == ' ' || c == '█'),
+                    "solo bloques y espacios: {}",
+                    s.content
+                );
+            }
         }
     }
 }

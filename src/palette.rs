@@ -196,8 +196,7 @@ impl Palette {
         let cur = self.input[bi..]
             .chars()
             .next()
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| " ".to_string());
+            .map_or_else(|| " ".to_string(), |c| c.to_string());
         let after_b = self.input[bi..]
             .char_indices()
             .nth(1)
@@ -248,6 +247,28 @@ impl Palette {
         f.render_stateful_widget(list, rows[1], &mut state);
     }
 
+    /// Completa la entrada con la sugerencia seleccionada. Sin efecto
+    /// si no hay sugerencias.
+    fn autocomplete(&mut self) {
+        let list = self.suggestions();
+        if list.is_empty() {
+            return;
+        }
+        let idx = self.selected.min(list.len().saturating_sub(1));
+        let Some(sel) = list.into_iter().nth(idx) else {
+            return;
+        };
+        if sel.label == "/themes" {
+            self.input = "/themes ".to_string();
+        } else if matches!(sel.action, PaletteAction::ApplyTheme(_)) {
+            self.input = format!("/themes {}", sel.label);
+        } else {
+            self.input = sel.label;
+        }
+        self.cursor = self.input.chars().count();
+        self.selected = 0;
+    }
+
     /// Maneja una tecla. Solo `Press` sin `Ctrl`/`Alt` edita el texto.
     pub fn handle_key(&mut self, key: KeyEvent) -> PaletteAction {
         if key.kind != KeyEventKind::Press {
@@ -259,20 +280,26 @@ impl Palette {
                 return PaletteAction::Close;
             }
             KeyCode::Enter => {
+                // `/themes` solo abre el modo lista: sin filtro no aplica nada.
+                if self.input.trim().eq_ignore_ascii_case("/themes") {
+                    return PaletteAction::None;
+                }
                 let list = self.suggestions();
                 if list.is_empty() {
                     return PaletteAction::Unknown;
                 }
                 let action = list
                     .get(self.selected.min(list.len().saturating_sub(1)))
-                    .map(|s| s.action.clone())
-                    .unwrap_or(PaletteAction::Unknown);
-                // `/themes` solo abre el modo lista: Enter sin filtro no aplica nada.
+                    .map_or(PaletteAction::Unknown, |s| s.action.clone());
                 if action == PaletteAction::ApplyTheme(usize::MAX) {
                     return PaletteAction::None;
                 }
                 self.close();
                 return action;
+            }
+            KeyCode::Tab => {
+                self.autocomplete();
+                return PaletteAction::None;
             }
             KeyCode::Up => {
                 let n = self.suggestions().len();
@@ -394,6 +421,66 @@ mod tests {
         };
         assert_eq!(p.handle_key(enter), PaletteAction::ApplyTheme(2));
         assert!(!p.open);
+    }
+
+    #[test]
+    fn test_tab_autocompleta_comando() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState};
+        let mut p = Palette::new();
+        p.open = true;
+        p.input = "/sa".to_string();
+        p.cursor = 3;
+        let tab = KeyEvent {
+            code: KeyCode::Tab,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+            kind: KeyEventKind::Press,
+            state: KeyEventState::empty(),
+        };
+        assert_eq!(p.handle_key(tab), PaletteAction::None);
+        assert_eq!(p.input, "/save");
+        assert!(p.open);
+    }
+
+    #[test]
+    fn test_tab_autocompleta_tema() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState};
+        let mut p = Palette::new();
+        p.open = true;
+        p.input = "/themes".to_string();
+        p.cursor = 7;
+        let tab = KeyEvent {
+            code: KeyCode::Tab,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+            kind: KeyEventKind::Press,
+            state: KeyEventState::empty(),
+        };
+        assert_eq!(p.handle_key(tab), PaletteAction::None);
+        assert_eq!(p.input, "/themes cobra-dark");
+        // Y luego Enter lo aplica.
+        let enter = KeyEvent {
+            code: KeyCode::Enter,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+            kind: KeyEventKind::Press,
+            state: KeyEventState::empty(),
+        };
+        assert_eq!(p.handle_key(enter), PaletteAction::ApplyTheme(0));
+    }
+
+    #[test]
+    fn test_tab_sin_sugerencias_no_hace_nada() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState};
+        let mut p = Palette::new();
+        p.open = true;
+        p.input = "/zzz".to_string();
+        p.cursor = 4;
+        let tab = KeyEvent {
+            code: KeyCode::Tab,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+            kind: KeyEventKind::Press,
+            state: KeyEventState::empty(),
+        };
+        assert_eq!(p.handle_key(tab), PaletteAction::None);
+        assert_eq!(p.input, "/zzz");
     }
 
     #[test]

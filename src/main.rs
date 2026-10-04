@@ -56,6 +56,8 @@ enum Pending {
     PickFile,
     /// Crear archivo con dialogo (Ctrl+N).
     NewFile,
+    /// Sobrescribir este archivo existente con uno vacio (Ctrl+N).
+    OverwriteNew(std::path::PathBuf),
     /// Volver al menu (Esc).
     ToMenu,
     /// Salir de la app (Ctrl+Q o Esc final).
@@ -86,6 +88,13 @@ impl Pending {
             Pending::NewFile => format!(
                 "'{name}' tiene cambios sin guardar. Crear uno nuevo los descarta."
             ),
+            Pending::OverwriteNew(p) => {
+                let target = p
+                    .file_name()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .unwrap_or("archivo");
+                format!("'{target}' ya existe y no esta vacio. Sobrescribirlo lo vacia.")
+            }
             Pending::ToMenu => format!(
                 "'{name}' tiene cambios sin guardar. Volver al menu los descarta."
             ),
@@ -94,20 +103,68 @@ impl Pending {
             }
         }
     }
+
+    /// Botones del modal según la acción: sobrescribir solo se confirma con S.
+    fn hint(&self) -> &'static str {
+        match self {
+            Pending::OverwriteNew(_) => "[S] Overwrite   [D/Esc] Cancel",
+            _ => "[S] Save   [D] Discard   [Esc] Cancel",
+        }
+    }
 }
 
 use util::centered_rect;
 
+/// Endurece el orden de búsqueda de DLLs en Windows: quita el directorio
+/// actual para mitigar DLL search-order hijacking si se lanza el editor
+/// desde una carpeta no confiable. Solo afecta a cargas por nombre
+/// relativo; las DLLs de sistema se siguen resolviendo igual.
+#[cfg(windows)]
+fn harden_dll_search_order() {
+    unsafe extern "system" {
+        fn SetDllDirectoryW(path: *const u16) -> i32;
+    }
+    // Cadena vacía = quita el CWD del orden de búsqueda (NULL lo restauraría).
+    let empty: [u16; 1] = [0];
+    // SAFETY: puntero a buffer válido de 1 u16 nulo; la API solo lo lee.
+    unsafe {
+        SetDllDirectoryW(empty.as_ptr());
+    }
+}
+
 fn main() -> Result<()> {
+    #[cfg(windows)]
+    harden_dll_search_order();
+    // Si algo paniquea con raw mode + alternate screen, la terminal
+    // quedaria rota: el hook la restaura antes del hook por defecto.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        disable_raw_mode().ok();
+        execute!(io::stdout(), LeaveAlternateScreen).ok();
+        default_hook(info);
+    }));
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    // Si falla algo del setup, restaurar lo ya activado antes de salir.
+    if execute!(stdout, EnterAlternateScreen).is_err() {
+        disable_raw_mode().ok();
+        return Err(anyhow::anyhow!("no se pudo entrar a alternate screen"));
+    }
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let mut terminal = match Terminal::new(backend) {
+        Ok(t) => t,
+        Err(e) => {
+            disable_raw_mode().ok();
+            execute!(io::stdout(), LeaveAlternateScreen).ok();
+            return Err(e.into());
+        }
+    };
     // Cursor propio dibujado: se oculta el nativo para evitar su parpadeo.
     terminal.hide_cursor().ok();
 
     let mut editor = CobraEditor::new();
+    editor.load_persisted_theme();
     editor.buffer = Buffer::new("");
     let mut picker = Picker::new();
     let mut menu = CobraMenu::new();
@@ -125,9 +182,10 @@ fn main() -> Result<()> {
         &mut mode,
     );
 
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
+    // Restore siempre, incluso si run_app devolvio Err (best-effort).
+    disable_raw_mode().ok();
+    execute!(terminal.backend_mut(), LeaveAlternateScreen).ok();
+    terminal.show_cursor().ok();
 
     if let Err(e) = res {
         eprintln!("Error: {e:?}");
@@ -184,6 +242,30 @@ fn open_buffer_at(editor: &mut CobraEditor, path: std::path::PathBuf) -> bool {
     }
 }
 
+/// `true` si crear un archivo en `path` destruiría contenido: existe y
+/// no esta vacio. Función pura de decisión (testeable sin diálogo).
+fn needs_overwrite_confirm(path: &std::path::Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|m| m.len() > 0)
+}
+
+/// Diálogo para archivo nuevo. Si la ruta existe y no esta vacía, no la
+/// trunca: deja un `Pending::OverwriteNew` en `slot` para confirmar.
+/// Devuelve `true` si se creó el archivo.
+fn request_new_file(editor: &mut CobraEditor, slot: &mut Option<Pending>) -> bool {
+    disable_raw_mode().ok();
+    let file = rfd::FileDialog::new().save_file();
+    enable_raw_mode().ok();
+    let Some(path) = file else {
+        return false;
+    };
+    if needs_overwrite_confirm(&path) {
+        *slot = Some(Pending::OverwriteNew(path));
+        return false;
+    }
+    editor.new_file(path);
+    true
+}
+
 /// Ejecuta la accion pendiente tras confirmar (guardada o descartada).
 /// Devuelve `true` si hay que salir de la app.
 fn apply_pending(
@@ -191,6 +273,7 @@ fn apply_pending(
     editor: &mut CobraEditor,
     focus: &mut Focus,
     mode: &mut AppMode,
+    slot: &mut Option<Pending>,
 ) -> bool {
     match pending {
         Pending::OpenPath(path) => {
@@ -208,14 +291,15 @@ fn apply_pending(
             }
         }
         Pending::NewFile => {
-            disable_raw_mode().ok();
-            let file = rfd::FileDialog::new().save_file();
-            enable_raw_mode().ok();
-            if let Some(path) = file {
-                editor.new_file(path);
+            if request_new_file(editor, slot) {
                 *mode = AppMode::Editing;
                 *focus = Focus::Editor;
             }
+        }
+        Pending::OverwriteNew(path) => {
+            editor.new_file(path);
+            *mode = AppMode::Editing;
+            *focus = Focus::Editor;
         }
         Pending::ToMenu => {
             *mode = AppMode::Menu;
@@ -263,19 +347,40 @@ fn run_app<B: ratatui::backend::Backend>(
                 terminal.draw(|f| {
                     let area = f.size();
                     f.render_widget(Clear, area);
+                    let theme = editor.theme();
+                    // Paleta arriba del todo cuando esta abierta.
+                    let (work, palette_rect) = if palette.open {
+                        let ph = palette.height().min(area.height.saturating_sub(4).max(4));
+                        let rows = Layout::default()
+                            .direction(Direction::Vertical)
+                            .constraints([
+                                Constraint::Length(ph),
+                                Constraint::Min(0),
+                                Constraint::Length(3),
+                            ])
+                            .split(area);
+                        (rows[1], Some(rows[0]))
+                    } else {
+                        (area, None)
+                    };
                     let rows = Layout::default()
                         .direction(Direction::Vertical)
                         .constraints([Constraint::Min(0), Constraint::Length(3)])
-                        .split(area);
+                        .split(work);
                     let chunks = Layout::default()
                         .direction(Direction::Horizontal)
                         .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
                         .split(rows[0]);
-                    picker.draw(f, chunks[0], *focus == Focus::Picker);
+                    let picker_focus = *focus == Focus::Picker && !palette.open;
+                    let editor_focus = *focus == Focus::Editor && !palette.open;
+                    picker.draw(f, chunks[0], picker_focus, &theme);
                     if editor.current_path.is_none() {
                         menu.draw_panel(f, chunks[1]);
                     } else {
-                        editor.draw(f, chunks[1], *focus == Focus::Editor);
+                        editor.draw(f, chunks[1], editor_focus);
+                    }
+                    if let Some(pr) = palette_rect {
+                        palette.draw(f, pr, theme.accent);
                     }
 
                     let (cx, cy) = editor.buffer.cursor();
@@ -303,9 +408,10 @@ fn run_app<B: ratatui::backend::Backend>(
                         "EDITOR"
                     };
                     let mut status = format!(
-                        " {} · {} · {} lines · {} B · Ln {}, Col {} · {:.0} FPS · Ctrl+S Save · Tab Switch · Esc Menu",
+                        " {} · {} · {} · {} lines · {} B · Ln {}, Col {} · {:.0} FPS · Ctrl+P Cmd · Ctrl+S Save · Tab Switch",
                         mode_label,
                         path,
+                        editor.theme_name(),
                         nlines,
                         nbytes,
                         cy + 1,
@@ -345,8 +451,7 @@ fn run_app<B: ratatui::backend::Backend>(
                             width: popup.width.saturating_sub(4),
                             height: popup.height.saturating_sub(2),
                         };
-                        let body =
-                        format!("{msg}\n\n[S] Save   [D] Discard   [Esc] Cancel");
+                        let body = format!("{msg}\n\n{}", p.hint());
                         let p = Paragraph::new(body)
                             .alignment(ratatui::layout::Alignment::Center)
                             .style(Style::default().fg(Color::White));
@@ -372,7 +477,7 @@ fn run_app<B: ratatui::backend::Backend>(
                         KeyCode::Char('s' | 'S') => {
                             if editor.save_current().is_ok() {
                                 if let Some(p) = pending.take()
-                                    && apply_pending(p, editor, focus, mode)
+                                    && apply_pending(p, editor, focus, mode, &mut pending)
                                 {
                                     return Ok(());
                                 }
@@ -381,8 +486,11 @@ fn run_app<B: ratatui::backend::Backend>(
                             }
                         }
                         KeyCode::Char('d' | 'D') => {
-                            if let Some(p) = pending.take()
-                                && apply_pending(p, editor, focus, mode)
+                            // Sobrescribir solo con S explicita; D cancela.
+                            if matches!(pending, Some(Pending::OverwriteNew(_))) {
+                                pending = None;
+                            } else if let Some(p) = pending.take()
+                                && apply_pending(p, editor, focus, mode, &mut pending)
                             {
                                 return Ok(());
                             }
@@ -392,11 +500,85 @@ fn run_app<B: ratatui::backend::Backend>(
                     continue;
                 }
                 if key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    palette.close();
                     if editor.is_dirty() {
                         pending = Some(Pending::Quit);
                         continue;
                     }
                     return Ok(());
+                }
+                // Paleta abierta: captura todo menos Ctrl+Q (ya manejado).
+                if palette.open {
+                    // Ctrl+P tambien la cierra.
+                    if key.code == KeyCode::Char('p')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        palette.close();
+                        continue;
+                    }
+                    match palette.handle_key(key) {
+                        PaletteAction::None | PaletteAction::Close => {}
+                        PaletteAction::Unknown => {
+                            editor.notification = Some(format!(
+                                "unknown command: {}",
+                                palette.input()
+                            ));
+                            editor.notification_expires = Some(
+                                std::time::Instant::now()
+                                    + std::time::Duration::from_secs(2),
+                            );
+                        }
+                        PaletteAction::ApplyTheme(idx) => {
+                            if editor.set_theme(idx) {
+                                themes::persist_theme(editor.theme_name());
+                                editor.notification = Some(format!(
+                                    "theme: {}",
+                                    editor.theme_name()
+                                ));
+                                editor.notification_expires = Some(
+                                    std::time::Instant::now()
+                                        + std::time::Duration::from_secs(2),
+                                );
+                            }
+                        }
+                        PaletteAction::Save => {
+                            if let Err(e) = editor.save_current() {
+                                editor.notification =
+                                    Some(format!("falla al guardar: {e}"));
+                                editor.notification_expires = Some(
+                                    std::time::Instant::now()
+                                        + std::time::Duration::from_secs(3),
+                                );
+                            }
+                        }
+                        PaletteAction::PickFile => {
+                            if editor.is_dirty() {
+                                pending = Some(Pending::PickFile);
+                            } else if open_file_dialog(editor) {
+                                *focus = Focus::Editor;
+                            }
+                        }
+                        PaletteAction::PickFolder => {
+                            if open_folder_dialog(picker) {
+                                *focus = Focus::Picker;
+                            }
+                        }
+                        PaletteAction::NewFile => {
+                            if editor.is_dirty() {
+                                pending = Some(Pending::NewFile);
+                            } else if request_new_file(editor, &mut pending) {
+                                *focus = Focus::Editor;
+                            }
+                        }
+                        PaletteAction::Quit => {
+                            if editor.is_dirty() {
+                                pending = Some(Pending::Quit);
+                            } else {
+                                return Ok(());
+                            }
+                        }
+                    }
+                    continue;
                 }
 
                 match mode {
@@ -423,11 +605,7 @@ fn run_app<B: ratatui::backend::Backend>(
                         if key.code == KeyCode::Char('n')
                             && key.modifiers.contains(KeyModifiers::CONTROL)
                         {
-                            disable_raw_mode().ok();
-                            let file = rfd::FileDialog::new().save_file();
-                            enable_raw_mode().ok();
-                            if let Some(path) = file {
-                                editor.new_file(path);
+                            if request_new_file(editor, &mut pending) {
                                 *mode = AppMode::Editing;
                                 *focus = Focus::Editor;
                             }
@@ -462,6 +640,12 @@ fn run_app<B: ratatui::backend::Backend>(
                             if open_file_dialog(editor) {
                                 *focus = Focus::Editor;
                             }
+                            continue;
+                        }
+                        if key.code == KeyCode::Char('p')
+                            && key.modifiers.contains(KeyModifiers::CONTROL)
+                        {
+                            palette.toggle();
                             continue;
                         }
                         if key.code == KeyCode::Tab {
@@ -528,11 +712,8 @@ fn run_app<B: ratatui::backend::Backend>(
                                     pending = Some(Pending::NewFile);
                                     continue;
                                 }
-                                disable_raw_mode().ok();
-                                let file = rfd::FileDialog::new().save_file();
-                                enable_raw_mode().ok();
-                                if let Some(path) = file {
-                                    editor.new_file(path);
+                                if request_new_file(editor, &mut pending) {
+                                    *focus = Focus::Editor;
                                 }
                                 continue;
                             }
@@ -548,5 +729,34 @@ fn run_app<B: ratatui::backend::Backend>(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::needs_overwrite_confirm;
+
+    fn test_path(name: &str) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(name);
+        p
+    }
+
+    #[test]
+    fn test_overwrite_solo_si_existe_y_no_vacio() {
+        let missing = test_path("cobra_sec_missing_unit.txt");
+        let _ = std::fs::remove_file(&missing);
+        assert!(!needs_overwrite_confirm(&missing));
+
+        let empty = test_path("cobra_sec_empty_unit.txt");
+        std::fs::write(&empty, []).unwrap();
+        assert!(!needs_overwrite_confirm(&empty));
+
+        let full = test_path("cobra_sec_full_unit.txt");
+        std::fs::write(&full, "contenido").unwrap();
+        assert!(needs_overwrite_confirm(&full));
+
+        let _ = std::fs::remove_file(&empty);
+        let _ = std::fs::remove_file(&full);
     }
 }

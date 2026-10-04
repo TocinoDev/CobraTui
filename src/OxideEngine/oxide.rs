@@ -1,5 +1,6 @@
 /// Motor de texto puro de `CobraTUI` (sin dependencias de TUI).
 /// Gestiona líneas, cursor y edición. 100% testeable sin terminal.
+#[derive(Debug)]
 pub struct Buffer {
     /// Cada entrada es una línea sin `\n` (el `\n` se añade en `to_string`).
     lines: Vec<String>,
@@ -103,8 +104,21 @@ impl Buffer {
         self.goal_x = 0;
     }
 
+    /// Tamaño máximo de archivo al abrir (`10 MiB`). Sin tope, un archivo
+    /// gigante se cargaría entero en memoria (`DoS` de memoria).
+    pub const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
+
     /// Carga buffer desde archivo (para picker `Enter`).
+    /// Rechaza archivos que superen `MAX_FILE_BYTES` antes de leerlos.
     pub fn from_file(path: &str) -> anyhow::Result<Self> {
+        let size = std::fs::metadata(path)?.len();
+        if size > Self::MAX_FILE_BYTES {
+            return Err(anyhow::anyhow!(
+                "archivo demasiado grande ({} B, máximo {} B)",
+                size,
+                Self::MAX_FILE_BYTES
+            ));
+        }
         let content = std::fs::read_to_string(path)?;
         Ok(Self::new(&content))
     }
@@ -116,8 +130,22 @@ impl Buffer {
             + self.lines.len().saturating_sub(1)
     }
 
+    /// Guarda de forma atómica: escribe a un temporal en el mismo
+    /// directorio y luego renombra. Si el proceso muere a mitad de
+    /// escritura, el archivo original sigue intacto (sin truncado).
+    /// El temporal lleva el PID para no colisionar con otra instancia
+    /// ni ser predecible por terceros en el mismo directorio.
     pub fn save(&self, path: &str) -> anyhow::Result<()> {
-        std::fs::write(path, self.to_string())?;
+        use std::io::Write as _;
+        let tmp_path = format!("{path}.tmp-cobra-{}", std::process::id());
+        let mut tmp = std::fs::File::create(&tmp_path)?;
+        tmp.write_all(self.to_string().as_bytes())?;
+        tmp.sync_all()?;
+        drop(tmp);
+        if let Err(e) = std::fs::rename(&tmp_path, path) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(e.into());
+        }
         Ok(())
     }
 }
@@ -162,6 +190,42 @@ mod tests {
             ]
         );
         assert_eq!(b.to_string(), "linea1\nlinea2\n");
+    }
+
+    #[test]
+    fn test_save_atomico_sin_restos() {
+        let path = "test_atomic_unit.txt";
+        let tmp = format!("{path}.tmp-cobra-{}", std::process::id());
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(tmp.as_str());
+        let b = Buffer::new("hola\natomico");
+        b.save(path).unwrap();
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "hola\natomico");
+        assert!(
+            std::fs::metadata(tmp.as_str()).is_err(),
+            "no debe quedar el temporal"
+        );
+        // Sobreescribir tambien es atomico y exacto.
+        let b2 = Buffer::new("otro");
+        b2.save(path).unwrap();
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "otro");
+        assert!(std::fs::metadata(tmp.as_str()).is_err());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn test_from_file_inexistente_falla_sin_panico() {
+        assert!(Buffer::from_file("no_existe_cobra_sec_unit.txt").is_err());
+    }
+
+    #[test]
+    fn test_from_file_rechaza_gigante() {
+        let path = "test_big_unit.txt";
+        let big = "a".repeat((Buffer::MAX_FILE_BYTES + 1) as usize);
+        std::fs::write(path, big).unwrap();
+        let err = Buffer::from_file(path).unwrap_err().to_string();
+        assert!(err.contains("demasiado grande"), "error: {err}");
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

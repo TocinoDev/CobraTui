@@ -7,17 +7,23 @@ Editor TUI ligero en Rust (`ratatui` + `crossterm`) con picker lateral estilo VS
 src/
   main.rs                 # Arranque, restore y loop 60fps + Focus Picker/Editor
   OxideEngine/oxide.rs    # Motor puro Buffer (sin TUI)
-  Editor/editor.rs        # Editor literal + bienvenida + popup guardado + scroll
+  Editor/editor.rs        # Editor + bienvenida + popup guardado + scroll + temas
   Editor/picker.rs        # Picker lateral 30% (lista archivos, resalta selección)
+  themes.rs               # Paletas (cobra-dark, dracula, monokai, ocean)
+  highlight.rs            # Resaltado lineal sin regex (keywords, strings, números)
+  palette.rs              # Paleta de comandos Ctrl+P (/themes, /save, /open…)
 docs/
   README.md               # Este archivo
   ARCHITECTURE.md         # Arquitectura y flujo
+  COMMANDS.md             # Paleta de comandos
+  THEMES.md               # Temas y resaltado
   OXIDE.md                # Motor Buffer
   EDITOR.md               # Editor y bienvenida
   PICKER.md               # Picker
   MAIN.md                 # Main y loop
   USAGE.md                # Uso y atajos
   BUILD.md                # Build, run y tests
+  SECURITY.md             # Mitigaciones (DLL search-order, topes, secretos)
 ```
 
 ## Stack

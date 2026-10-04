@@ -19,6 +19,8 @@ pub struct Editor {
     dirty: bool,
     theme: usize,
     scroll_y: usize,
+    /// Primera columna visible (scroll horizontal en chars).
+    scroll_x: usize,
     pub notification: Option<String>,
     pub notification_expires: Option<Instant>,
     cursor_visible: bool,
@@ -36,6 +38,7 @@ impl Editor {
             dirty: false,
             theme: themes::DEFAULT_THEME,
             scroll_y: 0,
+            scroll_x: 0,
             notification: None,
             notification_expires: None,
             cursor_visible: true,
@@ -60,6 +63,17 @@ impl Editor {
             false
         }
     }
+
+    /// Carga el tema persistido (si existe y es válido). Se llama una
+    /// vez al arrancar; `set_theme` no persiste solo para no tocar
+    /// disco en tests ni en cada preview.
+    pub fn load_persisted_theme(&mut self) {
+        if let Some(index) = themes::load_theme_index() {
+            self.theme = index;
+        }
+    }
+
+
 
     /// Muestra el cursor solido y reinicia el ciclo de parpadeo.
     /// Se llama con cada tecla para no parpadear mientras se escribe.
@@ -113,6 +127,7 @@ impl Editor {
         self.current_path = Some(path);
         self.mark_saved();
         self.scroll_y = 0;
+        self.scroll_x = 0;
         self.notification = None;
         self.notification_expires = None;
         self.touch_cursor();
@@ -124,6 +139,7 @@ impl Editor {
         self.current_path = Some(path);
         self.mark_saved();
         self.scroll_y = 0;
+        self.scroll_x = 0;
         self.notification = None;
         self.notification_expires = None;
         self.touch_cursor();
@@ -135,6 +151,7 @@ impl Editor {
         self.current_path = Some(path);
         self.mark_saved();
         self.scroll_y = 0;
+        self.scroll_x = 0;
         self.touch_cursor();
     }
 
@@ -164,6 +181,41 @@ impl Editor {
             .min(self.buffer.lines().len().saturating_sub(1));
     }
 
+    fn ensure_visible_x(&mut self, cx: usize, vis_w: usize) {
+        if vis_w == 0 || cx < self.scroll_x {
+            self.scroll_x = cx;
+        } else if cx >= self.scroll_x + vis_w {
+            self.scroll_x = cx - vis_w + 1;
+        }
+    }
+
+    /// Construye las lineas visibles con gutter, resaltado, sanitizado,
+    /// ventana horizontal y cursor propio. Sin allocs salvo lineas con
+    /// controles (caso raro, ver `sanitize_owned`).
+    fn text_lines(&self, theme: &Theme, ctx: &ViewCtx) -> Vec<Line<'_>> {
+        let is_blank = self.buffer.lines().len() == 1 && self.buffer.lines()[0].is_empty();
+        self.buffer
+            .lines()
+            .iter()
+            .enumerate()
+            .skip(ctx.scroll_y)
+            .take(ctx.visible_h)
+            .map(|(i, l)| match sanitize_owned(l) {
+                None => render_text_line(i, l, theme, ctx, is_blank),
+                Some(owned) => own_line(render_text_line(i, &owned, theme, ctx, is_blank)),
+            })
+            .collect()
+    }
+
+    /// Avanza el ciclo de parpadeo suave si paso `BLINK_MS`.
+    fn tick_blink(&mut self) {
+        if Instant::now().duration_since(self.last_blink).as_millis() >= u128::from(BLINK_MS)
+        {
+            self.cursor_visible = !self.cursor_visible;
+            self.last_blink = Instant::now();
+        }
+    }
+
     pub fn draw(&mut self, f: &mut Frame, area: Rect, focused: bool) {
         let theme = self.theme();
         let title_name = self
@@ -188,82 +240,27 @@ impl Editor {
         let (_, cursor_y) = self.buffer.cursor();
         self.ensure_visible(cursor_y, visible_h);
 
-        // Parpadeo suave: alterna cada BLINK_MS. Solo se dibuja si el
-        // editor tiene el foco; no se usa el cursor nativo del terminal
-        // (ese es el parpadeo agresivo). Fase apagada = bloque tenue,
-        // nunca invisible del todo para no perder la posicion.
-        if Instant::now().duration_since(self.last_blink).as_millis() >= u128::from(BLINK_MS)
-        {
-            self.cursor_visible = !self.cursor_visible;
-            self.last_blink = Instant::now();
-        }
+        // Parpadeo suave con bloque propio (sin cursor nativo del
+        // terminal). Fase apagada = tenue, nunca invisible del todo.
+        self.tick_blink();
         let show_block = focused && self.cursor_visible;
 
-        let num_style = Style::default().fg(theme.border_dim);
-        let num_active = Style::default()
-            .fg(theme.accent)
-            .add_modifier(Modifier::BOLD);
-        let text_style = Style::default().fg(theme.text);
-        let hint_style = Style::default().fg(theme.border_dim);
-        let cursor_on = Style::default()
-            .bg(Color::White)
-            .fg(Color::Black)
-            .add_modifier(Modifier::BOLD);
-        let cursor_off = Style::default().bg(Color::DarkGray).fg(Color::Gray);
-
         let (cx, _) = self.buffer.cursor();
-        let is_blank = self.buffer.lines().len() == 1 && self.buffer.lines()[0].is_empty();
-        let byte_at = |s: &str, ci: usize| {
-            s.char_indices()
-                .nth(ci)
-                .map_or(s.len(), |(i, _)| i)
+        // Ancho visible del texto: resta el gutter `"NNN │ "` (6 celdas).
+        // El viewport horizontal sigue al cursor al moverse a los costados.
+        let vis_w = (inner.width as usize).saturating_sub(6);
+        self.ensure_visible_x(cx, vis_w);
+        let ctx = ViewCtx {
+            cursor_y,
+            cx,
+            visible_h,
+            vis_w,
+            scroll_x: self.scroll_x,
+            scroll_y: self.scroll_y,
+            focused,
+            show_block,
         };
-        let lines: Vec<Line> = self
-            .buffer
-            .lines()
-            .iter()
-            .enumerate()
-            .skip(self.scroll_y)
-            .take(visible_h)
-            .map(|(i, l)| {
-                let current = i == cursor_y;
-                let gutter = if current { num_active } else { num_style };
-                let prefix = Span::styled(format!("{:>3} │ ", i + 1), gutter);
-                if l.is_empty() && is_blank {
-                    if current && focused {
-                        let style = if show_block { cursor_on } else { cursor_off };
-                        return Line::from(vec![
-                            prefix,
-                            Span::styled(" ", style),
-                            Span::styled(" Start typing…", hint_style),
-                        ]);
-                    }
-                    return Line::from(vec![
-                        prefix,
-                        Span::styled("Start typing…", hint_style),
-                    ]);
-                }
-                if current && focused {
-                    let style = if show_block { cursor_on } else { cursor_off };
-                    let nchars = l.chars().count();
-                    if cx >= nchars {
-                        let mut spans =
-                            code_spans(l, &theme, text_style, None);
-                        spans.insert(0, prefix);
-                        spans.push(Span::styled(" ", style));
-                        return Line::from(spans);
-                    }
-                    let b0 = byte_at(l, cx);
-                    let b1 = byte_at(l, cx + 1);
-                    let mut spans = code_spans(l, &theme, text_style, Some((b0, b1, style)));
-                    spans.insert(0, prefix);
-                    return Line::from(spans);
-                }
-                let mut spans = code_spans(l, &theme, text_style, None);
-                spans.insert(0, prefix);
-                Line::from(spans)
-            })
-            .collect();
+        let lines = self.text_lines(&theme, &ctx);
         let paragraph = Paragraph::new(lines).block(block);
         f.render_widget(paragraph, area);
 
@@ -321,6 +318,124 @@ impl Editor {
     }
 }
 
+/// Byte index del `char_idx`-esimo char (frontera UTF-8 segura).
+fn byte_idx(s: &str, ci: usize) -> usize {
+    s.char_indices().nth(ci).map_or(s.len(), |(i, _)| i)
+}
+
+/// Parametros del viewport para construir las lineas visibles.
+struct ViewCtx {
+    cursor_y: usize,
+    cx: usize,
+    visible_h: usize,
+    vis_w: usize,
+    scroll_x: usize,
+    scroll_y: usize,
+    focused: bool,
+    show_block: bool,
+}
+
+/// Sanitizado solo para display: `\t` se ve como un espacio y el resto
+/// de controles como `�`. Preserva la cantidad de chars (1:1) para no
+/// romper el mapeo cursor<->bytes. Devuelve `None` si no hay controles
+/// (caso comun, sin alloc). El buffer (y lo que se guarda) queda intacto.
+fn sanitize_owned(l: &str) -> Option<String> {
+    if !l.chars().any(char::is_control) {
+        return None;
+    }
+    Some(
+        l.chars()
+            .map(|c| {
+                if c == '\t' {
+                    ' '
+                } else if c.is_control() {
+                    '�'
+                } else {
+                    c
+                }
+            })
+            .collect(),
+    )
+}
+
+/// Construye una linea visible (gutter + texto resaltado + cursor).
+/// El texto se presta de `line`.
+fn render_text_line<'a>(
+    i: usize,
+    line: &'a str,
+    theme: &Theme,
+    ctx: &ViewCtx,
+    is_blank: bool,
+) -> Line<'a> {
+    let num_style = Style::default().fg(theme.border_dim);
+    let num_active = Style::default()
+        .fg(theme.accent)
+        .add_modifier(Modifier::BOLD);
+    let text_style = Style::default().fg(theme.text);
+    let hint_style = Style::default().fg(theme.border_dim);
+    let cursor_on = Style::default()
+        .bg(Color::White)
+        .fg(Color::Black)
+        .add_modifier(Modifier::BOLD);
+    let cursor_off = Style::default().bg(Color::DarkGray).fg(Color::Gray);
+
+    let current = i == ctx.cursor_y;
+    let gutter = if current { num_active } else { num_style };
+    let prefix = Span::styled(format!("{:>3} │ ", i + 1), gutter);
+    // Ventana visible en bytes (fronteras UTF-8 seguras).
+    let vb0 = byte_idx(line, ctx.scroll_x);
+    let vb1 = byte_idx(line, ctx.scroll_x + ctx.vis_w);
+    let view = (vb0, vb1);
+    if line.is_empty() && is_blank {
+        if current && ctx.focused {
+            let style = if ctx.show_block { cursor_on } else { cursor_off };
+            return Line::from(vec![
+                prefix,
+                Span::styled(" ", style),
+                Span::styled(" Start typing…", hint_style),
+            ]);
+        }
+        return Line::from(vec![
+            prefix,
+            Span::styled("Start typing…", hint_style),
+        ]);
+    }
+    if current && ctx.focused {
+        let style = if ctx.show_block { cursor_on } else { cursor_off };
+        let nchars = line.chars().count();
+        if ctx.cx >= nchars {
+            let mut spans = code_spans(line, theme, text_style, None, view);
+            spans.insert(0, prefix);
+            if ctx.vis_w > 0 {
+                spans.push(Span::styled(" ", style));
+            }
+            return Line::from(spans);
+        }
+        let b0 = byte_idx(line, ctx.cx);
+        let b1 = byte_idx(line, ctx.cx + 1);
+        let mut spans = code_spans(line, theme, text_style, Some((b0, b1, style)), view);
+        spans.insert(0, prefix);
+        return Line::from(spans);
+    }
+    let mut spans = code_spans(line, theme, text_style, None, view);
+    spans.insert(0, prefix);
+    Line::from(spans)
+}
+
+/// Transfiere una linea a spans propios (para texto sanitizado local).
+fn own_line(line: Line<'_>) -> Line<'static> {
+    Line::from(
+        line
+            .spans
+            .into_iter()
+            .map(|sp| Span {
+                content: std::borrow::Cow::Owned(sp.content.into_owned()),
+                style: sp.style,
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
 fn style_for(kind: Kind, theme: &Theme) -> Style {
     match kind {
         Kind::Keyword => Style::default()
@@ -329,18 +444,28 @@ fn style_for(kind: Kind, theme: &Theme) -> Style {
         Kind::String => Style::default().fg(theme.string),
         Kind::Number => Style::default().fg(theme.number),
         Kind::Comment => Style::default().fg(theme.comment),
+        Kind::Function => Style::default().fg(theme.function),
+        Kind::Type => Style::default()
+            .fg(theme.type_)
+            .add_modifier(Modifier::BOLD),
+        Kind::Constant => Style::default()
+            .fg(theme.constant)
+            .add_modifier(Modifier::BOLD),
+        Kind::Lifetime => Style::default().fg(theme.lifetime),
     }
 }
 
 /// Emite los `Span`s de una linea con resaltado. `cursor` es el rango de
 /// bytes del caracter bajo el cursor con su estilo: lo parte del tramo
-/// que lo contenga. Todos los cortes son fronteras UTF-8 (vienen del
-/// escaner o de `char_indices`).
+/// que lo contenga. `view` recorta a la ventana horizontal visible.
+/// Todos los cortes son fronteras UTF-8 (vienen del escaner o de
+/// `char_indices`).
 fn code_spans<'a>(
     line: &'a str,
     theme: &Theme,
     text_style: Style,
     cursor: Option<(usize, usize, Style)>,
+    view: (usize, usize),
 ) -> Vec<Span<'a>> {
     fn push_range<'a>(
         spans: &mut Vec<Span<'a>>,
@@ -371,21 +496,30 @@ fn code_spans<'a>(
         }
     }
 
+    let (vs, ve) = view;
     let mut spans = Vec::new();
-    let mut pos = 0;
+    let mut pos = vs;
     for t in highlight::highlight_line(line) {
-        push_range(&mut spans, line, pos, t.start, text_style, cursor);
+        if t.end <= vs {
+            continue;
+        }
+        if t.start >= ve {
+            break;
+        }
+        let s = t.start.max(vs);
+        let e = t.end.min(ve);
+        push_range(&mut spans, line, pos, s, text_style, cursor);
         push_range(
             &mut spans,
             line,
-            t.start,
-            t.end,
+            s,
+            e,
             style_for(t.kind, theme),
             cursor,
         );
-        pos = t.end;
+        pos = e;
     }
-    push_range(&mut spans, line, pos, line.len(), text_style, cursor);
+    push_range(&mut spans, line, pos, ve, text_style, cursor);
     spans
 }
 
@@ -420,7 +554,80 @@ fn draw_notification(f: &mut Frame, area: Rect, msg: &str, accent: Color) {
 
 #[cfg(test)]
 mod tests {
-    use super::Editor;
+    use super::{code_spans, sanitize_owned, Editor};
+    use ratatui::style::{Color, Style};
+
+    #[test]
+    fn test_sanitize_solo_display() {
+        // Sin controles: None, sin alloc.
+        assert_eq!(sanitize_owned("hola"), None);
+        assert_eq!(sanitize_owned(""), None);
+        // Tab -> espacio, otros controles -> reemplazo, 1:1 en chars.
+        let clean = sanitize_owned("a\tb\x07c").unwrap();
+        assert_eq!(clean, "a b�c");
+        assert_eq!(clean.chars().count(), 5);
+    }
+
+    #[test]
+    fn test_code_spans_mixto_con_cursor() {
+        let theme = crate::themes::get(0);
+        let line = "fn foo(x: String) -> u32 {";
+        let full = (0, line.len());
+        let plain = code_spans(line, &theme, Style::default(), None, full);
+        assert!(plain.len() > 3);
+        // Cursor sobre la 'f' de `foo` (byte 3..4): no paniquea y parte el tramo.
+        let cur = Style::default().bg(Color::White);
+        let with_cur = code_spans(line, &theme, Style::default(), Some((3, 4, cur)), full);
+        assert!(with_cur.len() >= plain.len());
+        // Linea con emoji + cursor al final: fronteras validas.
+        let uni = "let e = \"😀\";";
+        let spans = code_spans(
+            uni,
+            &theme,
+            Style::default(),
+            Some((uni.len(), uni.len(), cur)),
+            (0, uni.len()),
+        );
+        assert!(!spans.is_empty());
+    }
+
+    #[test]
+    fn test_code_spans_ventana_horizontal() {
+        let theme = crate::themes::get(0);
+        let line = "fn foo(x: String) -> u32 {";
+        // Ventana de los primeros 6 bytes: solo `fn foo` parcial.
+        let spans = code_spans(line, &theme, Style::default(), None, (0, 6));
+        let text: String = spans.iter().map(|s| s.content.to_string()).collect();
+        assert_eq!(text, "fn foo");
+        // Ventana vacia no paniquea ni emite nada.
+        let empty = code_spans(line, &theme, Style::default(), None, (5, 5));
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn test_set_theme_valida_indice() {
+        let mut ed = Editor::new();
+        assert_eq!(ed.theme_name(), "cobra-dark");
+        assert!(ed.set_theme(1));
+        assert_eq!(ed.theme_name(), "dracula");
+        assert!(!ed.set_theme(999));
+        assert_eq!(ed.theme_name(), "dracula");
+    }
+
+    #[test]
+    fn test_save_sin_archivo_falla_sin_panico() {
+        let mut ed = Editor::new();
+        assert!(ed.save_current().is_err());
+        assert!(!ed.is_dirty());
+    }
+
+    #[test]
+    fn test_open_inexistente_falla_sin_panico() {
+        let mut ed = Editor::new();
+        let r = ed.open_file(std::path::PathBuf::from("no_existe_cobra_sec_unit.txt"));
+        assert!(r.is_err());
+        assert!(ed.current_path.is_none());
+    }
 
     #[test]
     fn test_dirty_tracking() {

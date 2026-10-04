@@ -27,7 +27,7 @@ pub struct Editor {
 - `Enter` → `insert_newline`, `Backspace` → `delete_char`, `Char(c)` → `insert_char`, `Left/Right/Up/Down` → `move_cursor`, `Tab` → 4 espacios, `Esc` → `return false`.
 
 ## Scroll
-`scroll_y` se actualiza en `draw` (necesita `&mut`) y en `handle_key` tras mover cursor. Cursor siempre visible.
+`scroll_y` (vertical) y `scroll_x` (horizontal, en chars) se actualizan en `draw` (necesita `&mut`): la ventana sigue al cursor en ambas direcciones. Las líneas largas se recortan a la ventana visible por frontera UTF-8 (`byte_idx`), con resaltado y cursor superpuestos sin clonar de más.
 
 ## `centered_rect(w,h,area) -> Rect`
 Centra popup: `x = area.x + (area.width-w)/2`, `y` igual.

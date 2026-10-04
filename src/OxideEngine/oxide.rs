@@ -129,17 +129,69 @@ impl Buffer {
         self.lines.iter().map(String::len).sum::<usize>() + self.lines.len().saturating_sub(1)
     }
 
-    /// Guarda de forma atómica: escribe a un temporal en el mismo
-    /// directorio y luego renombra. Si el proceso muere a mitad de
-    /// escritura, el archivo original sigue intacto (sin truncado).
-    /// El temporal lleva el PID para no colisionar con otra instancia
-    /// ni ser predecible por terceros en el mismo directorio.
+    /// Intentos para crear el temporal antes de rendirse.
+    const MAX_TMP_ATTEMPTS: u32 = 16;
+
+    /// Guarda de forma atómica: crea un temporal con `create_new` en el
+    /// mismo directorio (nombre `.tmp-cobra-<pid>-<n>`, hasta 16 intentos
+    /// ante `AlreadyExists`), escribe, sincroniza, cierra y renombra.
+    /// Si algo falla, borra el temporal. Copia los permisos del original
+    /// para no alterar el modo del archivo. Rechaza symlinks, junctions
+    /// y todo destino que no sea archivo regular.
     pub fn save(&self, path: &str) -> anyhow::Result<()> {
         use std::io::Write as _;
-        let tmp_path = format!("{path}.tmp-cobra-{}", std::process::id());
-        let mut tmp = std::fs::File::create(&tmp_path)?;
-        tmp.write_all(self.to_string().as_bytes())?;
-        tmp.sync_all()?;
+        let target = std::path::Path::new(path);
+        // Sin seguir enlaces: un symlink/junction como destino se rechaza.
+        // `NotFound` (archivo nuevo) sigue adelante.
+        match std::fs::symlink_metadata(path) {
+            Ok(m) => {
+                let ft = m.file_type();
+                if ft.is_symlink() || !ft.is_file() {
+                    return Err(anyhow::anyhow!("destino no es un archivo regular"));
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        let original_perms = std::fs::metadata(path).map(|m| m.permissions()).ok();
+        let dir = target
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map_or_else(|| std::path::Path::new("."), |p| p);
+        let pid = std::process::id();
+        let mut slot: Option<(std::path::PathBuf, std::fs::File)> = None;
+        for n in 0..Self::MAX_TMP_ATTEMPTS {
+            let candidate = dir.join(format!(".tmp-cobra-{pid}-{n}"));
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(f) => {
+                    slot = Some((candidate, f));
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e.into()),
+            }
+        }
+        let (tmp_path, mut tmp) =
+            slot.ok_or_else(|| anyhow::anyhow!("sin temporal libre tras 16 intentos"))?;
+        // Toda falla a partir de aquí limpia el temporal antes de salir.
+        if let Some(perms) = original_perms {
+            if let Err(e) = tmp.set_permissions(perms) {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err(e.into());
+            }
+        }
+        if let Err(e) = tmp.write_all(self.to_string().as_bytes()) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(e.into());
+        }
+        if let Err(e) = tmp.sync_all() {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(e.into());
+        }
         drop(tmp);
         if let Err(e) = std::fs::rename(&tmp_path, path) {
             let _ = std::fs::remove_file(&tmp_path);
@@ -160,11 +212,17 @@ impl std::fmt::Display for Buffer {
         Ok(())
     }
 }
+/// Mutex para serializar los tests que guardan archivos: comparten el
+/// espacio de nombres de temporales (mismo PID) y correrían en carrera.
+#[cfg(test)]
+pub(crate) static SAVE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
-    use super::Buffer;
+    use super::{Buffer, SAVE_TEST_LOCK};
     #[test]
     fn test_save_crea_archivo() {
+        let _guard = SAVE_TEST_LOCK.lock().unwrap();
         let b = Buffer::new("hola test_save\nlinea2");
         let path = "test_save_unit.txt";
         b.save(path).unwrap();
@@ -187,24 +245,95 @@ mod tests {
         assert_eq!(b.to_string(), "linea1\nlinea2\n");
     }
 
+    /// Temporales `.tmp-cobra-*` en el directorio actual. Los tests del
+    /// mismo proceso comparten PID, así que se reintenta un momento por
+    /// si otro test está guardando en ese instante.
+    fn tmp_leftovers() -> Vec<String> {
+        for _ in 0..40 {
+            let left: Vec<String> = std::fs::read_dir(".")
+                .map(|rd| {
+                    rd.filter_map(Result::ok)
+                        .map(|e| e.file_name().to_string_lossy().to_string())
+                        .filter(|n| n.starts_with(".tmp-cobra-"))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if left.is_empty() {
+                return left;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        std::fs::read_dir(".")
+            .map(|rd| {
+                rd.filter_map(Result::ok)
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .filter(|n| n.starts_with(".tmp-cobra-"))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     #[test]
     fn test_save_atomico_sin_restos() {
+        let _guard = SAVE_TEST_LOCK.lock().unwrap();
         let path = "test_atomic_unit.txt";
-        let tmp = format!("{path}.tmp-cobra-{}", std::process::id());
         let _ = std::fs::remove_file(path);
-        let _ = std::fs::remove_file(tmp.as_str());
         let b = Buffer::new("hola\natomico");
         b.save(path).unwrap();
         assert_eq!(std::fs::read_to_string(path).unwrap(), "hola\natomico");
-        assert!(
-            std::fs::metadata(tmp.as_str()).is_err(),
-            "no debe quedar el temporal"
-        );
         // Sobreescribir tambien es atomico y exacto.
         let b2 = Buffer::new("otro");
         b2.save(path).unwrap();
         assert_eq!(std::fs::read_to_string(path).unwrap(), "otro");
-        assert!(std::fs::metadata(tmp.as_str()).is_err());
+        assert!(tmp_leftovers().is_empty(), "no debe quedar el temporal");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn test_save_colision_temporal_usa_siguiente() {
+        let _guard = SAVE_TEST_LOCK.lock().unwrap();
+        // Pre-crea el primer candidato `.tmp-cobra-<pid>-0`: el save debe
+        // saltarlo (create_new falla con AlreadyExists) sin tocarlo.
+        let path = "test_collision_unit.txt";
+        let first = format!(".tmp-cobra-{}-0", std::process::id());
+        let _ = std::fs::remove_file(path);
+        std::fs::write(&first, "marcador").unwrap();
+        Buffer::new("nuevo").save(path).unwrap();
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "nuevo");
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "marcador");
+        let _ = std::fs::remove_file(&first);
+        let _ = std::fs::remove_file(path);
+        assert!(tmp_leftovers().is_empty());
+    }
+
+    #[test]
+    fn test_save_conserva_permisos() {
+        let _guard = SAVE_TEST_LOCK.lock().unwrap();
+        let path = "test_perms_unit.txt";
+        let _ = std::fs::remove_file(path);
+        std::fs::write(path, "x").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mut perms = std::fs::metadata(path).unwrap().permissions();
+            perms.set_mode(0o640);
+            std::fs::set_permissions(path, perms).unwrap();
+        }
+        Buffer::new("y").save(path).unwrap();
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "y");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o640
+            );
+        }
+        #[cfg(windows)]
+        {
+            // En Windows solo se valida que el flag readonly sobrevive.
+            assert!(!std::fs::metadata(path).unwrap().permissions().readonly());
+        }
         std::fs::remove_file(path).unwrap();
     }
 

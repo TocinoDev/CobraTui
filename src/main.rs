@@ -191,11 +191,27 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn open_folder_dialog(picker: &mut Picker) -> bool {
+/// Rechaza rutas remotas (UNC) con notificación clara. Devuelve `true`
+/// si se rechazó (el llamador debe abortar la operación).
+fn reject_remote(editor: &mut CobraEditor, path: &std::path::Path) -> bool {
+    if util::is_remote(path) {
+        editor.notification = Some("ruta remota no soportada".to_string());
+        editor.notification_expires = Some(
+            std::time::Instant::now() + std::time::Duration::from_secs(2),
+        );
+        return true;
+    }
+    false
+}
+
+fn open_folder_dialog(picker: &mut Picker, editor: &mut CobraEditor) -> bool {
     disable_raw_mode().ok();
     let folder = rfd::FileDialog::new().pick_folder();
     enable_raw_mode().ok();
     if let Some(path) = folder {
+        if reject_remote(editor, &path) {
+            return false;
+        }
         picker.current_dir = path;
         picker.reload();
         return true;
@@ -207,10 +223,13 @@ fn open_file_dialog(editor: &mut CobraEditor) -> bool {
     disable_raw_mode().ok();
     let file = rfd::FileDialog::new().pick_file();
     enable_raw_mode().ok();
-    if let Some(path) = file
-        && editor.open_file(path).is_ok()
-    {
-        return true;
+    if let Some(path) = file {
+        if reject_remote(editor, &path) {
+            return false;
+        }
+        if editor.open_file(path).is_ok() {
+            return true;
+        }
     }
     false
 }
@@ -255,6 +274,9 @@ fn request_new_file(editor: &mut CobraEditor, slot: &mut Option<Pending>) -> boo
     let Some(path) = file else {
         return false;
     };
+    if reject_remote(editor, &path) {
+        return false;
+    }
     if needs_overwrite_confirm(&path) {
         *slot = Some(Pending::OverwriteNew(path));
         return false;
@@ -547,7 +569,7 @@ fn run_app<B: ratatui::backend::Backend>(
                             }
                         }
                         PaletteAction::PickFolder => {
-                            if open_folder_dialog(picker) {
+                            if open_folder_dialog(picker, editor) {
                                 *focus = Focus::Picker;
                             }
                         }
@@ -574,7 +596,7 @@ fn run_app<B: ratatui::backend::Backend>(
                         if key.code == KeyCode::Char('k')
                             && key.modifiers.contains(KeyModifiers::CONTROL)
                         {
-                            if open_folder_dialog(picker) {
+                            if open_folder_dialog(picker, editor) {
                                 *mode = AppMode::Editing;
                                 *focus = Focus::Picker;
                             }
@@ -611,7 +633,7 @@ fn run_app<B: ratatui::backend::Backend>(
                         if key.code == KeyCode::Char('k')
                             && key.modifiers.contains(KeyModifiers::CONTROL)
                         {
-                            if open_folder_dialog(picker) {
+                            if open_folder_dialog(picker, editor) {
                                 *focus = Focus::Picker;
                             }
                             continue;
@@ -663,6 +685,9 @@ fn run_app<B: ratatui::backend::Backend>(
                                             continue;
                                         }
                                         let full = picker.current_dir.join(&name);
+                                        if reject_remote(editor, &full) {
+                                            continue;
+                                        }
                                         if full.is_dir() {
                                             picker.current_dir = full;
                                             picker.reload();

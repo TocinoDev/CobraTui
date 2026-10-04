@@ -12,6 +12,22 @@ pub fn centered_rect(w: u16, h: u16, area: Rect) -> Rect {
     }
 }
 
+/// `true` si la ruta es remota (UNC): `\\servidor\recurso`,
+/// `\\?\UNC\...` o `\\.\...` (DeviceNS). En el resto de plataformas
+/// estos prefijos no existen y siempre es `false`.
+pub fn is_remote(path: &std::path::Path) -> bool {
+    use std::path::{Component, Prefix};
+    path.components().any(|c| {
+        matches!(
+            c,
+            Component::Prefix(p) if matches!(
+                p.kind(),
+                Prefix::UNC(..) | Prefix::VerbatimUNC(..) | Prefix::DeviceNS(..)
+            )
+        )
+    })
+}
+
 /// Sanitizado solo para mostrar: sustituye todo carácter de control
 /// (incluido `\x1b` y C1) excepto `\t` por U+FFFD. Preserva la cantidad
 /// de chars (1:1) para no romper mapeos byte<->char. El contenido
@@ -30,7 +46,7 @@ pub fn sanitize(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::sanitize;
+    use super::{is_remote, sanitize};
 
     #[test]
     fn test_sanitize_reemplaza_controles() {
@@ -53,5 +69,32 @@ mod tests {
     fn test_sanitize_preserva_cantidad_chars() {
         let s = "a\tb\x1bc";
         assert_eq!(s.chars().count(), sanitize(s).chars().count());
+    }
+
+    #[test]
+    fn test_is_remote_local_no() {
+        use std::path::Path;
+        assert!(!is_remote(Path::new("relativo/archivo.txt")));
+        assert!(!is_remote(Path::new(".")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_is_remote_unc_si() {
+        use std::path::Path;
+        assert!(is_remote(Path::new("\\\\servidor\\recurso")));
+        assert!(is_remote(Path::new("\\\\servidor\\recurso\\dir\\a.txt")));
+        assert!(is_remote(Path::new("\\\\?\\UNC\\servidor\\recurso")));
+        assert!(is_remote(Path::new("\\\\.\\COM1")));
+        // Disco local y verbatim de disco no son remotos.
+        assert!(!is_remote(Path::new("C:\\dir\\a.txt")));
+        assert!(!is_remote(Path::new("\\\\?\\C:\\dir")));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_is_remote_solo_windows() {
+        use std::path::Path;
+        assert!(!is_remote(Path::new("/mnt/datos/a.txt")));
     }
 }

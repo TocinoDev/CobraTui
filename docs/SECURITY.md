@@ -42,6 +42,13 @@ terminal o del sistema operativo en sí.
 Sin `unwrap()`/`expect()` en el código propio fuera de tests (solo en
 `#[cfg(test)]`); errores propagados con `anyhow` y notificados en UI.
 
+## Verificación del binario (build limpio `cargo clean && cargo build --release`)
+
+- `DependentLoadFlags=0x800` (solo System32) y `GuardFlags=0x10017500`
+  (CFG) en el Load Config del PE.
+- Imports solo de sistema (`kernel32`, `user32`, `ole32`, `shell32`,
+  `ntdll`, …): sin `VCRUNTIME140.dll` ni `api-ms-win-crt-*`.
+
 ## Dependencias (auditoría por lectura, sin red)
 
 4 directas (`anyhow 1.0.104`, `crossterm 0.27.0`, `ratatui 0.24.0`,

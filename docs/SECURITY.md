@@ -58,6 +58,12 @@ por majors distintos o targets Windows: normal. `build.rs` revisados
 no-op): benignos. Reglas en `deny.toml` (requiere red para
 `cargo deny check`). Pendiente con red: `cargo audit` de advisories.
 
+Riesgo aceptado (Dependabot #1, low): RUSTSEC-2026-0002 en `lru`
+0.12.5 (vía `ratatui 0.24`, fijado a `^0.12`; parche en 0.16.3).
+Soundness teórico en `IterMut` (Stacked Borrows, sin CVE, CVSS 2.7),
+sin uso directo propio y sin exploit conocido. Fix real = subir
+`ratatui`+`crossterm` (cambio mayor, pendiente).
+
 ## Tests de seguridad (`cargo test`)
 
 - `from_file` inexistente/gigante/directorio/reservado: `Err` sin pánico.

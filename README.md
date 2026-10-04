@@ -82,9 +82,19 @@ docs/                  # Documentación detallada (arquitectura, uso, seguridad�
 ## Seguridad
 
 - Archivos de más de 10 MiB se rechazan antes de leerlos.
-- Sin `unwrap()` en rutas de producción; errores con notificación, sin pánicos.
+- Sin `unwrap()`/`expect()` en el código propio fuera de tests; errores con notificación, sin pánicos.
 - En Windows se quita el directorio actual del orden de búsqueda de DLLs.
 - Detalle completo en [`docs/SECURITY.md`](docs/SECURITY.md).
+
+## Verificar la descarga
+
+Cada release incluye `SHA256SUMS.txt` junto al zip. En Windows:
+
+```sh
+certutil -hashfile CobraTUI-v0.1.0-win64.zip SHA256
+```
+
+El hash debe coincidir con el publicado. Si no coincide, no lo ejecutes.
 
 ## Estado
 

@@ -1,55 +1,71 @@
-# Seguridad
+# Seguridad de CobraTUI
 
-CobraTUI es un editor local monousuario sin red, auth ni secretos.
-Mitigaciones aplicadas en el código:
+## Modelo de amenazas
 
-- **Orden de búsqueda de DLLs (Windows):** `harden_dll_search_order()`
-  en `src/main.rs` llama a `SetDllDirectoryW("")` al arrancar para
-  quitar el directorio actual de la búsqueda. Protege si se lanza el
-  editor desde una carpeta no confiable y alguna dependencia (actual o
-  futura) carga una DLL por nombre relativo. Sin dependencias nuevas
-  (FFI directo a `kernel32`, bloque `unsafe` mínimo y documentado).
-- **Tope de tamaño al abrir:** `Buffer::from_file` rechaza archivos de
-  más de `MAX_FILE_BYTES` (10 MiB) antes de leerlos.
-- **Guardado atómico:** `Buffer::save` escribe a `*.tmp-cobra` + `fsync`
-  + `rename`. Si el proceso muere a mitad de escritura, el original
-  sigue intacto (sin truncado).
-- **Sin truncado silencioso:** `Ctrl+N` sobre un archivo existente no
-  vacío pide confirmación (`Pending::OverwriteNew`, solo `S` confirma).
-- **Rutas UTF-8:** las rutas no UTF-8 se rechazan con notificación en
-  vez de `unwrap()` (sin pánicos en producción; `unwrap` solo en tests).
-- **CRLF normalizado:** `\r\n`/`\r` a `\n` al abrir para no corromper
-  el render del terminal.
-- **Render sanitizado:** los controles (`\t` → espacio, resto → `�`)
-  solo en display; el buffer y lo guardado quedan intactos.
-- **Terminal siempre restaurada:** hook de panic + restore best-effort
-  en todos los caminos de `main` (raw mode + alternate screen).
-- **Sin secretos:** no hay `.env`, claves ni tokens en el repo;
-  `.gitignore` excluye `.env*`, `*.pem`, `*.key`, `credentials*`.
-- **Paleta sin eval:** los comandos son literales estrictos
-  (`/themes`, `/save`, …); entrada acotada a 64 caracteres.
+CobraTUI es un editor de texto local y monousuario: sin red, sin
+autenticación, sin multiusuario y sin secretos. El atacante relevante
+**no** es remoto; son los datos que el usuario abre o el entorno desde
+el que lo lanza:
+
+1. **Archivos/carpetas no confiables** que el usuario abre (contenido
+   con secuencias de escape, nombres con controles, symlinks,
+   archivos gigantes o especiales).
+2. **Directorio de lanzamiento hostil** (DLL planting si se ejecuta
+   desde una carpeta controlada por un tercero).
+3. **Rutas remotas (UNC)** que cuelgan la app o exfiltran NTLM.
+4. **Fallo a mitad de escritura** (corte de luz, kill) que corrompa
+   el archivo, y **pérdida de datos** (truncados silenciosos).
+5. **Terminal rota** tras un panic (raw mode + alternate screen).
+
+Fuera de alcance: red, sandboxing del SO, vulnerabilidades del
+terminal o del sistema operativo en sí.
+
+## Mitigaciones aplicadas
+
+| Amenaza | Mitigación | Ubicación |
+|---|---|---|
+| DLL planting (CWD) | `SetDllDirectoryW("")` al arrancar | `src/main.rs` |
+| DLL planting (link) | `+crt-static` (sin VCRUNTIME140), `/DEPENDENTLOADFLAG:0x800`, Control Flow Guard | `.cargo/config.toml` |
+| Truncado por crash | Guardado atómico: temporal `create_new` + `fsync` + `rename`, con reintentos y limpieza | `src/OxideEngine/oxide.rs` (`atomic_write`) |
+| Symlink/junction destino | Rechazo vía `symlink_metadata` (sin seguir enlaces) | `oxide.rs` (`save`) |
+| Permisos alterados | Se copian los del original al temporal | `oxide.rs` (`save`) |
+| Escape injection en terminal | Sanitizado solo-display (`util::sanitize`, `\t` preservado) en editor, explorer, notificaciones y paleta | `src/util.rs`, renders |
+| Rutas UNC/remotas | `util::is_remote` (UNC, VerbatimUNC, DeviceNS); rechazo con aviso en diálogos, atajos y explorer | `src/util.rs`, `src/main.rs` |
+| Archivo gigante (DoS memoria) | Tope de 10 MiB con lectura acotada (`take`), sin chequeo previo separado | `oxide.rs` (`from_file`) |
+| Dispositivos `CON`/`NUL`/… | Rechazo por nombre reservado + exigencia de archivo regular | `util.rs`, `oxide.rs` |
+| Truncado silencioso (Ctrl+N) | Confirmación obligatoria si existe y no está vacío | `src/main.rs` (`OverwriteNew`) |
+| Cambios sin guardar | Modal `[S]/[D]/[Esc]` + marca `●` en el título | `src/main.rs`, `Editor` |
+| Terminal rota | Hook de panic + restore best-effort en todos los caminos | `src/main.rs` |
+| Preferencias corruptas | Tema con límite de 64 bytes, lista cerrada y guardado atómico | `src/themes.rs` |
+| Secretos en repo | Sin `.env`/claves/tokens; `.gitignore` excluye `.env*`, `*.pem`, `*.key`, `credentials*` | `.gitignore` |
+
+Sin `unwrap()`/`expect()` en el código propio fuera de tests (solo en
+`#[cfg(test)]`); errores propagados con `anyhow` y notificados en UI.
 
 ## Dependencias (auditoría por lectura, sin red)
 
 4 directas (`anyhow 1.0.104`, `crossterm 0.27.0`, `ratatui 0.24.0`,
-`rfd 0.14.1`), 200 paquetes fijados en `Cargo.lock`. Duplicados solo
-por majors distintos (`getrandom` 0.2/0.4, `hashbrown` 0.15/0.17,
-`syn` 2/3, `windows-sys` 0.48–0.61) o por target Windows: normal, sin
-acción. `build.rs` revisados: `anyhow` (probe de features con `rustc`
-local) y `rfd` (solo flags de link por OS, en Windows no hace nada):
-benignos. Sin scripts postinstall (Cargo no los tiene). Pendiente con
-red: `cargo audit` para advisories (SA-001 del informe).
-
-Ver informe completo de la última auditoría (solo lectura) en el
-historial del proyecto: 0 confirmados, 1 pendiente (`cargo audit`
-de dependencias, requiere red).
+`rfd 0.14.1`), ~200 paquetes fijados en `Cargo.lock`. Duplicados solo
+por majors distintos o targets Windows: normal. `build.rs` revisados
+(`anyhow`: probe local de features; `rfd`: flags de link, en Windows
+no-op): benignos. Reglas en `deny.toml` (requiere red para
+`cargo deny check`). Pendiente con red: `cargo audit` de advisories.
 
 ## Tests de seguridad (`cargo test`)
 
-- `from_file` inexistente/gigante: falla con `Err`, sin pánico.
+- `from_file` inexistente/gigante/directorio/reservado: `Err` sin pánico.
 - `save_current` sin archivo y `open_file` inexistente: `Err` sin pánico.
-- `needs_overwrite_confirm`: solo `true` si existe y no está vacío
-  (inexistente y vacío dan `false`).
-- Sanitizado: sin controles no aloca; `\t`→espacio, resto→`�`, 1:1
-  en chars; vacía sigue vacía.
-- Dirty tracking: limpio al abrir/guardar, sucio al editar.
+- `needs_overwrite_confirm`: solo `true` si existe y no está vacío.
+- Guardado atómico: contenido exacto, sin temporales, colisión salta
+  al siguiente, permisos conservados.
+- Sanitizado: sin controles no aloca; `\t` se preserva, resto a U+FFFD.
+- `is_remote` / reservados: UNC/DeviceNS `true`, locales `false`.
+- Tema: roundtrip, inválido/sobretamaño/binario ignorados, sin restos.
+- Paleta acotada (64 chars, 6 sugerencias), dirty tracking, UTF-8.
+
+## Reportar una vulnerabilidad
+
+No abrir un issue público con detalles. Usar **Private vulnerability
+reporting** del repo en GitHub (*Security → Report a vulnerability*),
+describiendo versión afectada, pasos para reproducir e impacto. Se
+responde publicando el fix y rotando lo expuesto si aplica.

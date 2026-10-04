@@ -1,0 +1,10 @@
+[package]
+name = "CobraTUI"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+crossterm = "0.27"
+ratatui = "0.24"
+anyhow = "1"
+rfd = "0.14"

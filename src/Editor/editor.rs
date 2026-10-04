@@ -1,0 +1,438 @@
+﻿//! Editor de texto `CobraTUI`.
+use crate::highlight::{self, Kind};
+use crate::themes::{self, Theme};
+use crate::OxideEngine::oxide::Buffer;
+use crate::util::centered_rect;
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::{
+    Frame,
+    layout::Rect,
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph},
+};
+use std::time::{Duration, Instant};
+
+pub struct Editor {
+    pub buffer: Buffer,
+    pub current_path: Option<std::path::PathBuf>,
+    dirty: bool,
+    theme: usize,
+    scroll_y: usize,
+    pub notification: Option<String>,
+    pub notification_expires: Option<Instant>,
+    cursor_visible: bool,
+    last_blink: Instant,
+}
+
+/// Intervalo del parpadeo suave del cursor propio (ms).
+const BLINK_MS: u64 = 530;
+
+impl Editor {
+    pub fn new() -> Self {
+        Self {
+            buffer: Buffer::new(""),
+            current_path: None,
+            dirty: false,
+            theme: themes::DEFAULT_THEME,
+            scroll_y: 0,
+            notification: None,
+            notification_expires: None,
+            cursor_visible: true,
+            last_blink: Instant::now(),
+        }
+    }
+
+    pub fn theme(&self) -> Theme {
+        themes::get(self.theme)
+    }
+
+    pub fn theme_name(&self) -> &'static str {
+        self.theme().name
+    }
+
+    /// Cambia el tema por indice validado. Devuelve `false` si es invalido.
+    pub fn set_theme(&mut self, index: usize) -> bool {
+        if index < themes::THEMES.len() {
+            self.theme = index;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Muestra el cursor solido y reinicia el ciclo de parpadeo.
+    /// Se llama con cada tecla para no parpadear mientras se escribe.
+    fn touch_cursor(&mut self) {
+        self.cursor_visible = true;
+        self.last_blink = Instant::now();
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.current_path.is_some() && self.dirty
+    }
+
+    pub fn mark_saved(&mut self) {
+        self.dirty = false;
+    }
+
+    fn mark_dirty(&mut self) {
+        if self.current_path.is_some() {
+            self.dirty = true;
+        }
+    }
+
+    /// Guarda en el archivo actual y actualiza notificacion + marca limpia.
+    /// Devuelve Ok(path) si guardo, Err si fallo o no hay archivo.
+    pub fn save_current(&mut self) -> anyhow::Result<std::path::PathBuf> {
+        let path = self
+            .current_path
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("sin archivo abierto"))?;
+        let path_str = path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("ruta no UTF-8"))?;
+        self.buffer.save(path_str)?;
+        self.mark_saved();
+        let abs = std::env::current_dir().map_or_else(
+            |_| path.display().to_string(),
+            |d| d.join(&path).display().to_string(),
+        );
+        self.notification = Some(format!("guardado con exito en: {abs}"));
+        self.notification_expires = Some(
+            std::time::Instant::now() + std::time::Duration::from_secs(2),
+        );
+        Ok(path)
+    }
+
+    pub fn open_file(&mut self, path: std::path::PathBuf) -> anyhow::Result<()> {
+        let path_str = path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("ruta no UTF-8"))?;
+        self.buffer = Buffer::from_file(path_str)?;
+        self.current_path = Some(path);
+        self.mark_saved();
+        self.scroll_y = 0;
+        self.notification = None;
+        self.notification_expires = None;
+        self.touch_cursor();
+        Ok(())
+    }
+
+    pub fn open_buffer(&mut self, buf: Buffer, path: std::path::PathBuf) {
+        self.buffer = buf;
+        self.current_path = Some(path);
+        self.mark_saved();
+        self.scroll_y = 0;
+        self.notification = None;
+        self.notification_expires = None;
+        self.touch_cursor();
+    }
+
+    pub fn new_file(&mut self, path: std::path::PathBuf) {
+        let _ = std::fs::write(&path, "");
+        self.buffer = Buffer::new("");
+        self.current_path = Some(path);
+        self.mark_saved();
+        self.scroll_y = 0;
+        self.touch_cursor();
+    }
+
+    fn edit_insert(&mut self, ch: char) {
+        self.buffer.insert_char(ch);
+        self.mark_dirty();
+    }
+
+    fn edit_delete(&mut self) {
+        self.buffer.delete_char();
+        self.mark_dirty();
+    }
+
+    fn edit_newline(&mut self) {
+        self.buffer.insert_newline();
+        self.mark_dirty();
+    }
+
+    fn ensure_visible(&mut self, cursor_y: usize, visible_h: usize) {
+        if cursor_y < self.scroll_y {
+            self.scroll_y = cursor_y;
+        } else if cursor_y >= self.scroll_y + visible_h {
+            self.scroll_y = cursor_y - visible_h + 1;
+        }
+        self.scroll_y = self
+            .scroll_y
+            .min(self.buffer.lines().len().saturating_sub(1));
+    }
+
+    pub fn draw(&mut self, f: &mut Frame, area: Rect, focused: bool) {
+        let theme = self.theme();
+        let title_name = self
+            .current_path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("Untitled");
+        let dirty_mark = if self.is_dirty() { " ●" } else { "" };
+        let block = Block::default()
+            .title(format!(" {title_name}{dirty_mark} "))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(if focused {
+                Style::default().fg(theme.accent)
+            } else {
+                Style::default().fg(theme.border_dim)
+            });
+        let inner = block.inner(area);
+
+        let visible_h = inner.height as usize;
+        let (_, cursor_y) = self.buffer.cursor();
+        self.ensure_visible(cursor_y, visible_h);
+
+        // Parpadeo suave: alterna cada BLINK_MS. Solo se dibuja si el
+        // editor tiene el foco; no se usa el cursor nativo del terminal
+        // (ese es el parpadeo agresivo). Fase apagada = bloque tenue,
+        // nunca invisible del todo para no perder la posicion.
+        if Instant::now().duration_since(self.last_blink).as_millis() >= u128::from(BLINK_MS)
+        {
+            self.cursor_visible = !self.cursor_visible;
+            self.last_blink = Instant::now();
+        }
+        let show_block = focused && self.cursor_visible;
+
+        let num_style = Style::default().fg(theme.border_dim);
+        let num_active = Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD);
+        let text_style = Style::default().fg(theme.text);
+        let hint_style = Style::default().fg(theme.border_dim);
+        let cursor_on = Style::default()
+            .bg(Color::White)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD);
+        let cursor_off = Style::default().bg(Color::DarkGray).fg(Color::Gray);
+
+        let (cx, _) = self.buffer.cursor();
+        let is_blank = self.buffer.lines().len() == 1 && self.buffer.lines()[0].is_empty();
+        let byte_at = |s: &str, ci: usize| {
+            s.char_indices()
+                .nth(ci)
+                .map_or(s.len(), |(i, _)| i)
+        };
+        let lines: Vec<Line> = self
+            .buffer
+            .lines()
+            .iter()
+            .enumerate()
+            .skip(self.scroll_y)
+            .take(visible_h)
+            .map(|(i, l)| {
+                let current = i == cursor_y;
+                let gutter = if current { num_active } else { num_style };
+                let prefix = Span::styled(format!("{:>3} │ ", i + 1), gutter);
+                if l.is_empty() && is_blank {
+                    if current && focused {
+                        let style = if show_block { cursor_on } else { cursor_off };
+                        return Line::from(vec![
+                            prefix,
+                            Span::styled(" ", style),
+                            Span::styled(" Start typing…", hint_style),
+                        ]);
+                    }
+                    return Line::from(vec![
+                        prefix,
+                        Span::styled("Start typing…", hint_style),
+                    ]);
+                }
+                if current && focused {
+                    let style = if show_block { cursor_on } else { cursor_off };
+                    let nchars = l.chars().count();
+                    if cx >= nchars {
+                        let mut spans =
+                            code_spans(l, &theme, text_style, None);
+                        spans.insert(0, prefix);
+                        spans.push(Span::styled(" ", style));
+                        return Line::from(spans);
+                    }
+                    let b0 = byte_at(l, cx);
+                    let b1 = byte_at(l, cx + 1);
+                    let mut spans = code_spans(l, &theme, text_style, Some((b0, b1, style)));
+                    spans.insert(0, prefix);
+                    return Line::from(spans);
+                }
+                let mut spans = code_spans(l, &theme, text_style, None);
+                spans.insert(0, prefix);
+                Line::from(spans)
+            })
+            .collect();
+        let paragraph = Paragraph::new(lines).block(block);
+        f.render_widget(paragraph, area);
+
+        if let (Some(msg), Some(expires)) = (&self.notification, &self.notification_expires)
+            && Instant::now() < *expires
+        {
+            draw_notification(f, area, msg, theme.accent);
+        }
+
+        // Sin cursor nativo: el bloque dibujado arriba ya marca la posicion.
+        // No se llama a `f.set_cursor` para evitar el parpadeo del terminal.
+    }
+
+    pub fn handle_key(&mut self, key: KeyEvent) -> bool {
+        if key.kind != KeyEventKind::Press {
+            return true;
+        }
+        // Cada tecla muestra el cursor solido: no parpadea mientras se escribe.
+        self.touch_cursor();
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+            if self.current_path.is_none() {
+                self.notification = Some("nada que guardar: abri un archivo primero".to_string());
+                self.notification_expires = Some(Instant::now() + Duration::from_secs(2));
+                return true;
+            }
+            if let Err(e) = self.save_current() {
+                self.notification = Some(format!("falla al guardar: {e}"));
+                self.notification_expires = Some(Instant::now() + Duration::from_secs(3));
+            }
+            return true;
+        }
+        if let Some(expires) = self.notification_expires
+            && Instant::now() >= expires
+        {
+            self.notification = None;
+            self.notification_expires = None;
+        }
+        match key.code {
+            KeyCode::Enter => self.edit_newline(),
+            KeyCode::Backspace => self.edit_delete(),
+            KeyCode::Char(c) => self.edit_insert(c),
+            KeyCode::Left => self.buffer.move_cursor(-1, 0),
+            KeyCode::Right => self.buffer.move_cursor(1, 0),
+            KeyCode::Up => self.buffer.move_cursor(0, -1),
+            KeyCode::Down => self.buffer.move_cursor(0, 1),
+            KeyCode::Esc => return false,
+            KeyCode::Tab => {
+                for _ in 0..4 {
+                    self.edit_insert(' ');
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+}
+
+fn style_for(kind: Kind, theme: &Theme) -> Style {
+    match kind {
+        Kind::Keyword => Style::default()
+            .fg(theme.keyword)
+            .add_modifier(Modifier::BOLD),
+        Kind::String => Style::default().fg(theme.string),
+        Kind::Number => Style::default().fg(theme.number),
+        Kind::Comment => Style::default().fg(theme.comment),
+    }
+}
+
+/// Emite los `Span`s de una linea con resaltado. `cursor` es el rango de
+/// bytes del caracter bajo el cursor con su estilo: lo parte del tramo
+/// que lo contenga. Todos los cortes son fronteras UTF-8 (vienen del
+/// escaner o de `char_indices`).
+fn code_spans<'a>(
+    line: &'a str,
+    theme: &Theme,
+    text_style: Style,
+    cursor: Option<(usize, usize, Style)>,
+) -> Vec<Span<'a>> {
+    fn push_range<'a>(
+        spans: &mut Vec<Span<'a>>,
+        line: &'a str,
+        start: usize,
+        end: usize,
+        style: Style,
+        cursor: Option<(usize, usize, Style)>,
+    ) {
+        if start >= end {
+            return;
+        }
+        match cursor {
+            None => spans.push(Span::styled(&line[start..end], style)),
+            Some((cb0, cb1, cs)) => {
+                if cb1 <= start || cb0 >= end {
+                    spans.push(Span::styled(&line[start..end], style));
+                } else {
+                    if start < cb0 {
+                        spans.push(Span::styled(&line[start..cb0], style));
+                    }
+                    spans.push(Span::styled(&line[cb0.max(start)..cb1.min(end)], cs));
+                    if cb1 < end {
+                        spans.push(Span::styled(&line[cb1..end], style));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut spans = Vec::new();
+    let mut pos = 0;
+    for t in highlight::highlight_line(line) {
+        push_range(&mut spans, line, pos, t.start, text_style, cursor);
+        push_range(
+            &mut spans,
+            line,
+            t.start,
+            t.end,
+            style_for(t.kind, theme),
+            cursor,
+        );
+        pos = t.end;
+    }
+    push_range(&mut spans, line, pos, line.len(), text_style, cursor);
+    spans
+}
+
+fn draw_notification(f: &mut Frame, area: Rect, msg: &str, accent: Color) {
+    let popup_width = (msg.chars().count() as u16 + 4).min(area.width.saturating_sub(4));
+    let popup = centered_rect(popup_width, 3, area);
+
+    f.render_widget(Clear, popup);
+    let block = Block::default()
+        .title(" Notice ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(accent));
+    f.render_widget(block, popup);
+
+    let inner_popup = Rect {
+        x: popup.x + 1,
+        y: popup.y + 1,
+        width: popup.width.saturating_sub(2),
+        height: popup.height.saturating_sub(2),
+    };
+    let style = if msg.starts_with("falla") {
+        Style::default().fg(Color::Red)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    f.render_widget(
+        Paragraph::new(msg.to_string()).style(style),
+        inner_popup,
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Editor;
+
+    #[test]
+    fn test_dirty_tracking() {
+        let path = std::path::PathBuf::from("test_dirty_unit.txt");
+        let _ = std::fs::remove_file(&path);
+        let mut ed = Editor::new();
+        ed.new_file(path.clone());
+        assert!(!ed.is_dirty());
+        ed.edit_insert('x');
+        assert!(ed.is_dirty());
+        ed.save_current().unwrap();
+        assert!(!ed.is_dirty());
+        let _ = std::fs::remove_file(&path);
+    }
+}

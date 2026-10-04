@@ -18,8 +18,14 @@ Editor de texto en terminal, ligero y rápido, escrito en Rust con `ratatui` + `
 
 ## Instalación
 
+**Opción A — zip listo:** descargá `CobraTUI-v0.1.0-win64.zip` de
+*Releases*, descomprimí y ejecutá `CobraTUI.exe`.
+
+**Opción B — compilar desde fuente (recomendado si desconfiás del
+binario: así verificás vos el código):**
+
 ```sh
-git clone <tu-repo>
+git clone https://github.com/TocinoDev/CobraTui.git
 cd CobraTUI
 cargo build --release
 ```

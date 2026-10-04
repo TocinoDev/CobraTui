@@ -128,21 +128,32 @@ pub fn config_file() -> Option<std::path::PathBuf> {
     })
 }
 
-/// Lee el indice persistido desde `path` (máximo 64 chars; ignora
-/// contenido inválido devolviendo `None`).
+/// Lee el indice persistido desde `path` con límite de 64 bytes y lo
+/// valida contra la lista cerrada de temas. Contenido inválido,
+/// sobredimensionado o no UTF-8 se ignora (`None` → tema por defecto),
+/// sin fallar nunca.
 pub fn load_theme_from(path: &std::path::Path) -> Option<usize> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let name: String = content.chars().take(64).collect();
-    by_name(&name)
+    use std::io::Read as _;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut buf = Vec::new();
+    file.by_ref().take(65).read_to_end(&mut buf).ok()?;
+    if buf.len() > 64 {
+        return None;
+    }
+    let text = std::str::from_utf8(&buf).ok()?;
+    by_name(text)
 }
 
-/// Persiste el nombre del tema (best-effort: los errores se ignoran,
-/// no vale romper el editor por no poder guardar preferencia).
+/// Persiste el nombre del tema con el mismo guardado atómico del
+/// editor (best-effort: los errores se ignoran, no vale romper el
+/// editor por no poder guardar una preferencia).
 pub fn persist_theme_to(path: &std::path::Path, name: &str) {
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        if !parent.as_os_str().is_empty() {
+            let _ = std::fs::create_dir_all(parent);
+        }
     }
-    let _ = std::fs::write(path, format!("{name}\n"));
+    let _ = crate::OxideEngine::oxide::atomic_write(path, format!("{name}\n").as_bytes(), None);
 }
 
 /// Lee el tema persistido en la ubicación estándar, si existe y es válido.
@@ -172,6 +183,9 @@ mod tests {
 
     #[test]
     fn test_persist_y_load_roundtrip() {
+        let _guard = crate::OxideEngine::oxide::SAVE_TEST_LOCK
+            .lock()
+            .unwrap();
         let mut path = std::env::temp_dir();
         path.push("cobra_theme_unit_test");
         let _ = std::fs::remove_file(&path);
@@ -181,6 +195,44 @@ mod tests {
         // Contenido inválido se ignora sin pánico.
         std::fs::write(&path, "no-existe\n").unwrap();
         assert_eq!(load_theme_from(&path), None);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_load_rechaza_sobretamano_y_binario() {
+        let mut path = std::env::temp_dir();
+        path.push("cobra_theme_big_unit");
+        // 100 bytes > límite de 64: se ignora aunque empiece válido.
+        std::fs::write(&path, "ocean".to_string() + &"x".repeat(100)).unwrap();
+        assert_eq!(load_theme_from(&path), None);
+        // Bytes no UTF-8: se ignoran sin pánico.
+        std::fs::write(&path, [0xff, 0xfe, 0x00]).unwrap();
+        assert_eq!(load_theme_from(&path), None);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_persist_no_deja_temporales() {
+        // Serializado con los otros tests que guardan: comparten el
+        // espacio de nombres de temporales del proceso.
+        let _guard = crate::OxideEngine::oxide::SAVE_TEST_LOCK
+            .lock()
+            .unwrap();
+        let mut path = std::env::temp_dir();
+        path.push("cobra_theme_atomic_unit");
+        let _ = std::fs::remove_file(&path);
+        persist_theme_to(&path, "dracula");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "dracula\n");
+        let prefix = format!(".tmp-cobra-{}-", std::process::id());
+        let leftovers: Vec<String> = std::fs::read_dir(path.parent().unwrap())
+            .map(|rd| {
+                rd.filter_map(Result::ok)
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .filter(|n| n.starts_with(&prefix))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(leftovers.is_empty(), "restos: {leftovers:?}");
         let _ = std::fs::remove_file(&path);
     }
 

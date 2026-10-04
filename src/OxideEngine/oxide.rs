@@ -12,8 +12,67 @@ pub struct Buffer {
     goal_x: usize,
 }
 
+/// Intentos para crear el temporal antes de rendirse.
+const MAX_TMP_ATTEMPTS: u32 = 16;
+
+/// Escribe `bytes` en `path` de forma atómica: crea un temporal con
+/// `create_new` en el mismo directorio (`.tmp-cobra-<pid>-<n>`, hasta
+/// `MAX_TMP_ATTEMPTS` intentos ante `AlreadyExists`), escribe,
+/// sincroniza, aplica `perms` si se dan, cierra y renombra. Ante
+/// cualquier falla borra el temporal y devuelve error.
+pub fn atomic_write(
+    path: &std::path::Path,
+    bytes: &[u8],
+    perms: Option<std::fs::Permissions>,
+) -> anyhow::Result<()> {
+    use std::io::Write as _;
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map_or_else(|| std::path::Path::new("."), |p| p);
+    let pid = std::process::id();
+    let mut slot: Option<(std::path::PathBuf, std::fs::File)> = None;
+    for n in 0..MAX_TMP_ATTEMPTS {
+        let candidate = dir.join(format!(".tmp-cobra-{pid}-{n}"));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(f) => {
+                slot = Some((candidate, f));
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let (tmp_path, mut tmp) =
+        slot.ok_or_else(|| anyhow::anyhow!("sin temporal libre tras 16 intentos"))?;
+    if let Some(p) = perms {
+        if let Err(e) = tmp.set_permissions(p) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(e.into());
+        }
+    }
+    if let Err(e) = tmp.write_all(bytes) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e.into());
+    }
+    if let Err(e) = tmp.sync_all() {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e.into());
+    }
+    drop(tmp);
+    if let Err(e) = std::fs::rename(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e.into());
+    }
+    Ok(())
+}
+
 impl Buffer {
-    /// Getters para que `editor.rs` pueda renderizar sin exponer `Vec` mutable.
+    /// Getter para que `editor.rs` pueda renderizar sin exponer `Vec` mutable.
     pub fn lines(&self) -> &[String] {
         &self.lines
     }
@@ -143,20 +202,11 @@ impl Buffer {
         self.lines.iter().map(String::len).sum::<usize>() + self.lines.len().saturating_sub(1)
     }
 
-    /// Intentos para crear el temporal antes de rendirse.
-    const MAX_TMP_ATTEMPTS: u32 = 16;
-
-    /// Guarda de forma atómica: crea un temporal con `create_new` en el
-    /// mismo directorio (nombre `.tmp-cobra-<pid>-<n>`, hasta 16 intentos
-    /// ante `AlreadyExists`), escribe, sincroniza, cierra y renombra.
-    /// Si algo falla, borra el temporal. Copia los permisos del original
-    /// para no alterar el modo del archivo. Rechaza symlinks, junctions
-    /// y todo destino que no sea archivo regular.
+    /// Guarda de forma atómica con `atomic_write`, copiando los permisos
+    /// del original. Rechaza symlinks, junctions y todo destino que no
+    /// sea archivo regular (vía `symlink_metadata`, sin seguir enlaces).
     pub fn save(&self, path: &str) -> anyhow::Result<()> {
-        use std::io::Write as _;
         let target = std::path::Path::new(path);
-        // Sin seguir enlaces: un symlink/junction como destino se rechaza.
-        // `NotFound` (archivo nuevo) sigue adelante.
         match std::fs::symlink_metadata(path) {
             Ok(m) => {
                 let ft = m.file_type();
@@ -168,50 +218,7 @@ impl Buffer {
             Err(e) => return Err(e.into()),
         }
         let original_perms = std::fs::metadata(path).map(|m| m.permissions()).ok();
-        let dir = target
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .map_or_else(|| std::path::Path::new("."), |p| p);
-        let pid = std::process::id();
-        let mut slot: Option<(std::path::PathBuf, std::fs::File)> = None;
-        for n in 0..Self::MAX_TMP_ATTEMPTS {
-            let candidate = dir.join(format!(".tmp-cobra-{pid}-{n}"));
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&candidate)
-            {
-                Ok(f) => {
-                    slot = Some((candidate, f));
-                    break;
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(e) => return Err(e.into()),
-            }
-        }
-        let (tmp_path, mut tmp) =
-            slot.ok_or_else(|| anyhow::anyhow!("sin temporal libre tras 16 intentos"))?;
-        // Toda falla a partir de aquí limpia el temporal antes de salir.
-        if let Some(perms) = original_perms {
-            if let Err(e) = tmp.set_permissions(perms) {
-                let _ = std::fs::remove_file(&tmp_path);
-                return Err(e.into());
-            }
-        }
-        if let Err(e) = tmp.write_all(self.to_string().as_bytes()) {
-            let _ = std::fs::remove_file(&tmp_path);
-            return Err(e.into());
-        }
-        if let Err(e) = tmp.sync_all() {
-            let _ = std::fs::remove_file(&tmp_path);
-            return Err(e.into());
-        }
-        drop(tmp);
-        if let Err(e) = std::fs::rename(&tmp_path, path) {
-            let _ = std::fs::remove_file(&tmp_path);
-            return Err(e.into());
-        }
-        Ok(())
+        atomic_write(target, self.to_string().as_bytes(), original_perms)
     }
 }
 

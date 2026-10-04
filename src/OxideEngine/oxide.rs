@@ -29,7 +29,7 @@ pub fn atomic_write(
     let dir = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
-        .map_or_else(|| std::path::Path::new("."), |p| p);
+        .unwrap_or_else(|| std::path::Path::new("."));
     let pid = std::process::id();
     let mut slot: Option<(std::path::PathBuf, std::fs::File)> = None;
     for n in 0..MAX_TMP_ATTEMPTS {
@@ -49,11 +49,11 @@ pub fn atomic_write(
     }
     let (tmp_path, mut tmp) =
         slot.ok_or_else(|| anyhow::anyhow!("sin temporal libre tras 16 intentos"))?;
-    if let Some(p) = perms {
-        if let Err(e) = tmp.set_permissions(p) {
-            let _ = std::fs::remove_file(&tmp_path);
-            return Err(e.into());
-        }
+    if let Some(p) = perms
+        && let Err(e) = tmp.set_permissions(p)
+    {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e.into());
     }
     if let Err(e) = tmp.write_all(bytes) {
         let _ = std::fs::remove_file(&tmp_path);

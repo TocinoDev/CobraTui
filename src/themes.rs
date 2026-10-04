@@ -148,10 +148,10 @@ pub fn load_theme_from(path: &std::path::Path) -> Option<usize> {
 /// editor (best-effort: los errores se ignoran, no vale romper el
 /// editor por no poder guardar una preferencia).
 pub fn persist_theme_to(path: &std::path::Path, name: &str) {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            let _ = std::fs::create_dir_all(parent);
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        let _ = std::fs::create_dir_all(parent);
     }
     let _ = crate::OxideEngine::oxide::atomic_write(path, format!("{name}\n").as_bytes(), None);
 }

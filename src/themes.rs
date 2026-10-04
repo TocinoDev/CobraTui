@@ -183,9 +183,7 @@ mod tests {
 
     #[test]
     fn test_persist_y_load_roundtrip() {
-        let _guard = crate::OxideEngine::oxide::SAVE_TEST_LOCK
-            .lock()
-            .unwrap();
+        let _guard = crate::OxideEngine::oxide::SAVE_TEST_LOCK.lock().unwrap();
         let mut path = std::env::temp_dir();
         path.push("cobra_theme_unit_test");
         let _ = std::fs::remove_file(&path);
@@ -215,9 +213,7 @@ mod tests {
     fn test_persist_no_deja_temporales() {
         // Serializado con los otros tests que guardan: comparten el
         // espacio de nombres de temporales del proceso.
-        let _guard = crate::OxideEngine::oxide::SAVE_TEST_LOCK
-            .lock()
-            .unwrap();
+        let _guard = crate::OxideEngine::oxide::SAVE_TEST_LOCK.lock().unwrap();
         let mut path = std::env::temp_dir();
         path.push("cobra_theme_atomic_unit");
         let _ = std::fs::remove_file(&path);

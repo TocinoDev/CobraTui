@@ -39,11 +39,27 @@ pub fn is_reserved_device_name(path: &std::path::Path) -> bool {
     let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
     matches!(
         stem.as_str(),
-        "CON" | "PRN" | "AUX" | "NUL" | "COM1" | "COM2" | "COM3" | "COM4" | "COM5"
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
             | "COM6"
             | "COM7"
             | "COM8"
-            | "COM9" | "LPT1" | "LPT2" | "LPT3" | "LPT4" | "LPT5" | "LPT6" | "LPT7" | "LPT8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
             | "LPT9"
     )
 }
@@ -72,16 +88,7 @@ mod tests {
     fn test_reservados_windows() {
         use std::path::Path;
         for name in [
-            "CON",
-            "con",
-            "NUL",
-            "nul.txt",
-            "COM1",
-            "com9",
-            "LPT1",
-            "lpt9.dat",
-            "PRN",
-            "AUX",
+            "CON", "con", "NUL", "nul.txt", "COM1", "com9", "LPT1", "lpt9.dat", "PRN", "AUX",
         ] {
             assert!(is_reserved_device_name(Path::new(name)), "{name}");
             assert!(is_reserved_device_name(&Path::new("dir").join(name)));

@@ -196,9 +196,8 @@ fn main() -> Result<()> {
 fn reject_remote(editor: &mut CobraEditor, path: &std::path::Path) -> bool {
     if util::is_remote(path) {
         editor.notification = Some("ruta remota no soportada".to_string());
-        editor.notification_expires = Some(
-            std::time::Instant::now() + std::time::Duration::from_secs(2),
-        );
+        editor.notification_expires =
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
         return true;
     }
     false

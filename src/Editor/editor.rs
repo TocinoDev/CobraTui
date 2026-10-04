@@ -614,9 +614,7 @@ mod tests {
 
     #[test]
     fn test_dirty_tracking() {
-        let _guard = crate::OxideEngine::oxide::SAVE_TEST_LOCK
-            .lock()
-            .unwrap();
+        let _guard = crate::OxideEngine::oxide::SAVE_TEST_LOCK.lock().unwrap();
         let path = std::path::PathBuf::from("test_dirty_unit.txt");
         let _ = std::fs::remove_file(&path);
         let mut ed = Editor::new();

@@ -28,6 +28,26 @@ pub fn is_remote(path: &std::path::Path) -> bool {
     })
 }
 
+/// `true` si el nombre final de `path` es un dispositivo reservado de
+/// Windows (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`),
+/// con o sin extensión (`NUL.txt` también está reservado). Insensible
+/// a mayúsculas. Evita abrir dispositivos al leer archivos.
+pub fn is_reserved_device_name(path: &std::path::Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
+    matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "COM1" | "COM2" | "COM3" | "COM4" | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9" | "LPT1" | "LPT2" | "LPT3" | "LPT4" | "LPT5" | "LPT6" | "LPT7" | "LPT8"
+            | "LPT9"
+    )
+}
+
 /// Sanitizado solo para mostrar: sustituye todo carácter de control
 /// (incluido `\x1b` y C1) excepto `\t` por U+FFFD. Preserva la cantidad
 /// de chars (1:1) para no romper mapeos byte<->char. El contenido
@@ -46,7 +66,30 @@ pub fn sanitize(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_remote, sanitize};
+    use super::{is_remote, is_reserved_device_name, sanitize};
+
+    #[test]
+    fn test_reservados_windows() {
+        use std::path::Path;
+        for name in [
+            "CON",
+            "con",
+            "NUL",
+            "nul.txt",
+            "COM1",
+            "com9",
+            "LPT1",
+            "lpt9.dat",
+            "PRN",
+            "AUX",
+        ] {
+            assert!(is_reserved_device_name(Path::new(name)), "{name}");
+            assert!(is_reserved_device_name(&Path::new("dir").join(name)));
+        }
+        for name in ["console.txt", "null", "COM10", "notes", "a.txt", ""] {
+            assert!(!is_reserved_device_name(Path::new(name)), "{name}");
+        }
+    }
 
     #[test]
     fn test_sanitize_reemplaza_controles() {

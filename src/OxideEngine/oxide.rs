@@ -109,17 +109,31 @@ impl Buffer {
     pub const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 
     /// Carga buffer desde archivo (para picker `Enter`).
-    /// Rechaza archivos que superen `MAX_FILE_BYTES` antes de leerlos.
+    /// Apertura segura en un solo paso (sin chequeo previo separado):
+    /// rechaza nombres de dispositivo reservados de Windows, abre el
+    /// handle, exige archivo regular y lee como máximo `MAX_FILE_BYTES`
+    /// + 1 (si hay un byte de más, es demasiado grande).
     pub fn from_file(path: &str) -> anyhow::Result<Self> {
-        let size = std::fs::metadata(path)?.len();
-        if size > Self::MAX_FILE_BYTES {
+        use std::io::Read as _;
+        let fs_path = std::path::Path::new(path);
+        if crate::util::is_reserved_device_name(fs_path) {
+            return Err(anyhow::anyhow!("nombre de dispositivo reservado"));
+        }
+        let mut file = std::fs::File::open(fs_path)?;
+        if !file.metadata()?.is_file() {
+            return Err(anyhow::anyhow!("no es un archivo regular"));
+        }
+        let mut content = String::new();
+        let n = file
+            .by_ref()
+            .take(Self::MAX_FILE_BYTES + 1)
+            .read_to_string(&mut content)?;
+        if n as u64 > Self::MAX_FILE_BYTES {
             return Err(anyhow::anyhow!(
-                "archivo demasiado grande ({} B, máximo {} B)",
-                size,
+                "archivo demasiado grande (más de {} B)",
                 Self::MAX_FILE_BYTES
             ));
         }
-        let content = std::fs::read_to_string(path)?;
         Ok(Self::new(&content))
     }
 
@@ -340,6 +354,19 @@ mod tests {
     #[test]
     fn test_from_file_inexistente_falla_sin_panico() {
         assert!(Buffer::from_file("no_existe_cobra_sec_unit.txt").is_err());
+    }
+
+    #[test]
+    fn test_from_file_rechaza_directorio() {
+        assert!(Buffer::from_file(".").is_err());
+    }
+
+    #[test]
+    fn test_from_file_rechaza_reservados() {
+        // Sin tocar disco en Windows: CON/NUL se rechazan por nombre.
+        assert!(Buffer::from_file("CON").is_err());
+        assert!(Buffer::from_file("nul.txt").is_err());
+        assert!(Buffer::from_file("COM1").is_err());
     }
 
     #[test]

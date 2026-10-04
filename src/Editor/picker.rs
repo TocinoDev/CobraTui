@@ -33,12 +33,14 @@ impl Picker {
             .files
             .iter()
             .map(|e| {
-                let label = if e.name == ".." {
+                // Nombres sanitizados: en Linux un nombre puede traer ESC.
+                let name = crate::util::sanitize(&e.name);
+                let label = if name == ".." {
                     "  ..".to_string()
                 } else if e.is_dir {
-                    format!("▸ {}/", e.name)
+                    format!("▸ {name}/")
                 } else {
-                    format!("  {}", e.name)
+                    format!("  {name}")
                 };
                 ListItem::new(label)
             })

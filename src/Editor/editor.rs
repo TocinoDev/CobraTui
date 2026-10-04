@@ -331,27 +331,16 @@ struct ViewCtx {
     show_block: bool,
 }
 
-/// Sanitizado solo para display: `\t` se ve como un espacio y el resto
-/// de controles como `�`. Preserva la cantidad de chars (1:1) para no
-/// romper el mapeo cursor<->bytes. Devuelve `None` si no hay controles
-/// (caso comun, sin alloc). El buffer (y lo que se guarda) queda intacto.
+/// Sanitizado solo para display con `util::sanitize` (preserva `\t`,
+/// resto de controles a U+FFFD, 1:1 en chars). Devuelve `None` si no
+/// hay nada que sanitizar (caso comun, sin alloc). El buffer (y lo que
+/// se guarda) queda intacto.
 fn sanitize_owned(l: &str) -> Option<String> {
-    if !l.chars().any(char::is_control) {
-        return None;
+    if l.chars().any(|c| c.is_control() && c != '\t') {
+        Some(crate::util::sanitize(l))
+    } else {
+        None
     }
-    Some(
-        l.chars()
-            .map(|c| {
-                if c == '\t' {
-                    ' '
-                } else if c.is_control() {
-                    '�'
-                } else {
-                    c
-                }
-            })
-            .collect(),
-    )
 }
 
 /// Construye una linea visible (gutter + texto resaltado + cursor).
@@ -517,6 +506,9 @@ fn code_spans<'a>(
 }
 
 fn draw_notification(f: &mut Frame, area: Rect, msg: &str, accent: Color) {
+    // Sanitiza antes de medir/dibujar: un \n en el mensaje no debe
+    // romper el layout del popup.
+    let msg = crate::util::sanitize(msg);
     let popup_width = (msg.chars().count() as u16 + 4).min(area.width.saturating_sub(4));
     let popup = centered_rect(popup_width, 3, area);
 
@@ -549,13 +541,14 @@ mod tests {
 
     #[test]
     fn test_sanitize_solo_display() {
-        // Sin controles: None, sin alloc.
+        // Sin controles (o solo tabs): None, sin alloc.
         assert_eq!(sanitize_owned("hola"), None);
         assert_eq!(sanitize_owned(""), None);
-        // Tab -> espacio, otros controles -> reemplazo, 1:1 en chars.
-        let clean = sanitize_owned("a\tb\x07c").unwrap();
-        assert_eq!(clean, "a b�c");
-        assert_eq!(clean.chars().count(), 5);
+        assert_eq!(sanitize_owned("a\tb"), None);
+        // Otros controles -> U+FFFD via util::sanitize, 1:1 en chars.
+        let clean = sanitize_owned("a\x07c").unwrap();
+        assert_eq!(clean, "a�c");
+        assert_eq!(clean.chars().count(), 3);
     }
 
     #[test]

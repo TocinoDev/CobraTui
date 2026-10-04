@@ -191,17 +191,24 @@ impl Palette {
             .split(inner);
 
         // Entrada con bloque de cursor propio (sin cursor nativo).
-        let bi = self.byte_idx();
-        let before = &self.input[..bi];
-        let cur = self.input[bi..]
+        // Sanitizada para display: lo pegado puede traer controles.
+        // El indice se calcula sobre el texto sanitizado (1:1 en chars,
+        // pero distinto en bytes que el original).
+        let shown = crate::util::sanitize(&self.input);
+        let bi = shown
+            .char_indices()
+            .nth(self.cursor)
+            .map_or(shown.len(), |(i, _)| i);
+        let before = &shown[..bi];
+        let cur = shown[bi..]
             .chars()
             .next()
             .map_or_else(|| " ".to_string(), |c| c.to_string());
-        let after_b = self.input[bi..]
+        let after_b = shown[bi..]
             .char_indices()
             .nth(1)
-            .map_or(self.input.len(), |(i, _)| bi + i);
-        let after = &self.input[after_b..];
+            .map_or(shown.len(), |(i, _)| bi + i);
+        let after = &shown[after_b..];
         let prompt = Span::styled(
             "> ",
             Style::default().fg(accent).add_modifier(Modifier::BOLD),

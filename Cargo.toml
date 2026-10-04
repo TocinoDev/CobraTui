@@ -8,3 +8,12 @@ crossterm = "0.27"
 ratatui = "0.24"
 anyhow = "1"
 rfd = "0.14"
+
+[profile.release]
+# Endurecimiento del binario: chequeos de overflow, LTO total en una
+# sola unidad de compilación, sin símbolos y sin unwinding.
+overflow-checks = true
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"

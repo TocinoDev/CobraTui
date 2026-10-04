@@ -1,10 +1,10 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
+    Frame,
     layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph},
-    Frame,
 };
 
 /// Menú principal como pantalla de bienvenida a pantalla completa,
@@ -25,11 +25,7 @@ fn logo(accent: Style) -> Vec<Line<'static>> {
         "█     █   █ █   █ █  █  █   █   █   █   █   █",
         " ████  ███  ████  █   █ █   █   █    ███  █████",
     ];
-    let width = ROWS
-        .iter()
-        .map(|r| r.chars().count())
-        .max()
-        .unwrap_or(0);
+    let width = ROWS.iter().map(|r| r.chars().count()).max().unwrap_or(0);
     ROWS.iter()
         .map(|r| {
             let mut s = String::from(*r);
@@ -207,11 +203,7 @@ mod tests {
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.chars().count()).sum())
             .collect();
-        assert!(
-            (30..=48).contains(&widths[0]),
-            "ancho logo: {}",
-            widths[0]
-        );
+        assert!((30..=48).contains(&widths[0]), "ancho logo: {}", widths[0]);
         assert!(
             widths.iter().all(|w| *w == widths[0]),
             "filas desparejas: {widths:?}"

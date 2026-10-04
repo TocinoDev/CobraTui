@@ -126,8 +126,7 @@ impl Buffer {
     /// Longitud en bytes del contenido serializado (sin alocarlo).
     /// Para la status bar 60fps: evita `join` por frame.
     pub fn byte_len(&self) -> usize {
-        self.lines.iter().map(String::len).sum::<usize>()
-            + self.lines.len().saturating_sub(1)
+        self.lines.iter().map(String::len).sum::<usize>() + self.lines.len().saturating_sub(1)
     }
 
     /// Guarda de forma atómica: escribe a un temporal en el mismo
@@ -183,11 +182,7 @@ mod tests {
         assert!(!b.lines().iter().any(|l| l.contains('\r')));
         assert_eq!(
             b.lines(),
-            &[
-                "linea1".to_string(),
-                "linea2".to_string(),
-                String::new()
-            ]
+            &["linea1".to_string(), "linea2".to_string(), String::new()]
         );
         assert_eq!(b.to_string(), "linea1\nlinea2\n");
     }

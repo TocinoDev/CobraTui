@@ -1,7 +1,7 @@
-﻿//! Editor de texto `CobraTUI`.
+//! Editor de texto `CobraTUI`.
+use crate::OxideEngine::oxide::Buffer;
 use crate::highlight::{self, Kind};
 use crate::themes::{self, Theme};
-use crate::OxideEngine::oxide::Buffer;
 use crate::util::centered_rect;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
@@ -73,8 +73,6 @@ impl Editor {
         }
     }
 
-
-
     /// Muestra el cursor solido y reinicia el ciclo de parpadeo.
     /// Se llama con cada tecla para no parpadear mientras se escribe.
     fn touch_cursor(&mut self) {
@@ -113,9 +111,8 @@ impl Editor {
             |d| d.join(&path).display().to_string(),
         );
         self.notification = Some(format!("guardado con exito en: {abs}"));
-        self.notification_expires = Some(
-            std::time::Instant::now() + std::time::Duration::from_secs(2),
-        );
+        self.notification_expires =
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
         Ok(path)
     }
 
@@ -209,8 +206,7 @@ impl Editor {
 
     /// Avanza el ciclo de parpadeo suave si paso `BLINK_MS`.
     fn tick_blink(&mut self) {
-        if Instant::now().duration_since(self.last_blink).as_millis() >= u128::from(BLINK_MS)
-        {
+        if Instant::now().duration_since(self.last_blink).as_millis() >= u128::from(BLINK_MS) {
             self.cursor_visible = !self.cursor_visible;
             self.last_blink = Instant::now();
         }
@@ -388,20 +384,25 @@ fn render_text_line<'a>(
     let view = (vb0, vb1);
     if line.is_empty() && is_blank {
         if current && ctx.focused {
-            let style = if ctx.show_block { cursor_on } else { cursor_off };
+            let style = if ctx.show_block {
+                cursor_on
+            } else {
+                cursor_off
+            };
             return Line::from(vec![
                 prefix,
                 Span::styled(" ", style),
                 Span::styled(" Start typing…", hint_style),
             ]);
         }
-        return Line::from(vec![
-            prefix,
-            Span::styled("Start typing…", hint_style),
-        ]);
+        return Line::from(vec![prefix, Span::styled("Start typing…", hint_style)]);
     }
     if current && ctx.focused {
-        let style = if ctx.show_block { cursor_on } else { cursor_off };
+        let style = if ctx.show_block {
+            cursor_on
+        } else {
+            cursor_off
+        };
         let nchars = line.chars().count();
         if ctx.cx >= nchars {
             let mut spans = code_spans(line, theme, text_style, None, view);
@@ -425,8 +426,7 @@ fn render_text_line<'a>(
 /// Transfiere una linea a spans propios (para texto sanitizado local).
 fn own_line(line: Line<'_>) -> Line<'static> {
     Line::from(
-        line
-            .spans
+        line.spans
             .into_iter()
             .map(|sp| Span {
                 content: std::borrow::Cow::Owned(sp.content.into_owned()),
@@ -509,14 +509,7 @@ fn code_spans<'a>(
         let s = t.start.max(vs);
         let e = t.end.min(ve);
         push_range(&mut spans, line, pos, s, text_style, cursor);
-        push_range(
-            &mut spans,
-            line,
-            s,
-            e,
-            style_for(t.kind, theme),
-            cursor,
-        );
+        push_range(&mut spans, line, s, e, style_for(t.kind, theme), cursor);
         pos = e;
     }
     push_range(&mut spans, line, pos, ve, text_style, cursor);
@@ -546,15 +539,12 @@ fn draw_notification(f: &mut Frame, area: Rect, msg: &str, accent: Color) {
     } else {
         Style::default().fg(Color::White)
     };
-    f.render_widget(
-        Paragraph::new(msg.to_string()).style(style),
-        inner_popup,
-    );
+    f.render_widget(Paragraph::new(msg.to_string()).style(style), inner_popup);
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{code_spans, sanitize_owned, Editor};
+    use super::{Editor, code_spans, sanitize_owned};
     use ratatui::style::{Color, Style};
 
     #[test]

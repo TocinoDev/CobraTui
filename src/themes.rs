@@ -159,7 +159,7 @@ pub fn persist_theme(name: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{by_name, get, load_theme_from, persist_theme_to, DEFAULT_THEME, THEMES};
+    use super::{DEFAULT_THEME, THEMES, by_name, get, load_theme_from, persist_theme_to};
 
     #[test]
     fn test_lookup_insensible_a_mayusculas() {

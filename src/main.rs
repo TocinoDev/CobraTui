@@ -78,16 +78,14 @@ impl Pending {
                     .file_name()
                     .and_then(std::ffi::OsStr::to_str)
                     .unwrap_or("archivo");
-                format!(
-                    "'{name}' tiene cambios sin guardar. Abrir '{target}' los descarta."
-                )
+                format!("'{name}' tiene cambios sin guardar. Abrir '{target}' los descarta.")
             }
-            Pending::PickFile => format!(
-                "'{name}' tiene cambios sin guardar. Elegir otro archivo los descarta."
-            ),
-            Pending::NewFile => format!(
-                "'{name}' tiene cambios sin guardar. Crear uno nuevo los descarta."
-            ),
+            Pending::PickFile => {
+                format!("'{name}' tiene cambios sin guardar. Elegir otro archivo los descarta.")
+            }
+            Pending::NewFile => {
+                format!("'{name}' tiene cambios sin guardar. Crear uno nuevo los descarta.")
+            }
             Pending::OverwriteNew(p) => {
                 let target = p
                     .file_name()
@@ -95,9 +93,9 @@ impl Pending {
                     .unwrap_or("archivo");
                 format!("'{target}' ya existe y no esta vacio. Sobrescribirlo lo vacia.")
             }
-            Pending::ToMenu => format!(
-                "'{name}' tiene cambios sin guardar. Volver al menu los descarta."
-            ),
+            Pending::ToMenu => {
+                format!("'{name}' tiene cambios sin guardar. Volver al menu los descarta.")
+            }
             Pending::Quit => {
                 format!("'{name}' tiene cambios sin guardar. Salir los descarta.")
             }
@@ -219,9 +217,8 @@ fn open_file_dialog(editor: &mut CobraEditor) -> bool {
 
 fn notify_open_error(editor: &mut CobraEditor, e: impl std::fmt::Display) {
     editor.notification = Some(format!("falla al abrir: {e}"));
-    editor.notification_expires = Some(
-        std::time::Instant::now() + std::time::Duration::from_secs(2),
-    );
+    editor.notification_expires =
+        Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
 }
 
 /// Abre `path` en el editor. Devuelve `true` si se abrio.
@@ -519,35 +516,26 @@ fn run_app<B: ratatui::backend::Backend>(
                     match palette.handle_key(key) {
                         PaletteAction::None | PaletteAction::Close => {}
                         PaletteAction::Unknown => {
-                            editor.notification = Some(format!(
-                                "unknown command: {}",
-                                palette.input()
-                            ));
-                            editor.notification_expires = Some(
-                                std::time::Instant::now()
-                                    + std::time::Duration::from_secs(2),
-                            );
+                            editor.notification =
+                                Some(format!("unknown command: {}", palette.input()));
+                            editor.notification_expires =
+                                Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
                         }
                         PaletteAction::ApplyTheme(idx) => {
                             if editor.set_theme(idx) {
                                 themes::persist_theme(editor.theme_name());
-                                editor.notification = Some(format!(
-                                    "theme: {}",
-                                    editor.theme_name()
-                                ));
+                                editor.notification =
+                                    Some(format!("theme: {}", editor.theme_name()));
                                 editor.notification_expires = Some(
-                                    std::time::Instant::now()
-                                        + std::time::Duration::from_secs(2),
+                                    std::time::Instant::now() + std::time::Duration::from_secs(2),
                                 );
                             }
                         }
                         PaletteAction::Save => {
                             if let Err(e) = editor.save_current() {
-                                editor.notification =
-                                    Some(format!("falla al guardar: {e}"));
+                                editor.notification = Some(format!("falla al guardar: {e}"));
                                 editor.notification_expires = Some(
-                                    std::time::Instant::now()
-                                        + std::time::Duration::from_secs(3),
+                                    std::time::Instant::now() + std::time::Duration::from_secs(3),
                                 );
                             }
                         }
@@ -592,8 +580,7 @@ fn run_app<B: ratatui::backend::Backend>(
                             }
                             continue;
                         }
-                        if (key.code == KeyCode::Char('o')
-                            || key.code == KeyCode::Char('0'))
+                        if (key.code == KeyCode::Char('o') || key.code == KeyCode::Char('0'))
                             && key.modifiers.contains(KeyModifiers::CONTROL)
                         {
                             if open_file_dialog(editor) {
@@ -629,8 +616,7 @@ fn run_app<B: ratatui::backend::Backend>(
                             }
                             continue;
                         }
-                        if (key.code == KeyCode::Char('o')
-                            || key.code == KeyCode::Char('0'))
+                        if (key.code == KeyCode::Char('o') || key.code == KeyCode::Char('0'))
                             && key.modifiers.contains(KeyModifiers::CONTROL)
                         {
                             if editor.is_dirty() {

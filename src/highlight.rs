@@ -31,10 +31,9 @@ pub const MAX_SCAN_CHARS: usize = 512;
 
 /// Keywords ordenadas para `binary_search`.
 static KEYWORDS: &[&str] = &[
-    "Self", "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else",
-    "enum", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move",
-    "mut", "pub", "ref", "return", "self", "static", "struct", "trait", "true", "type", "use",
-    "where", "while",
+    "Self", "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum",
+    "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub",
+    "ref", "return", "self", "static", "struct", "trait", "true", "type", "use", "where", "while",
 ];
 
 /// `true` si `word` es keyword (busqueda binaria, sin allocs).
@@ -188,14 +187,16 @@ fn scan_ident(
             kind: Kind::Function,
         })
     } else {
-        classify_ident(word).map(|kind| Token { start: b, end, kind })
+        classify_ident(word).map(|kind| Token {
+            start: b,
+            end,
+            kind,
+        })
     }
 }
 
 /// Fin del char literal que abre en `b`, o `None` (ej. lifetime `'a`).
-fn scan_char_end(
-    it: &std::iter::Peekable<std::str::CharIndices<'_>>,
-) -> Option<usize> {
+fn scan_char_end(it: &std::iter::Peekable<std::str::CharIndices<'_>>) -> Option<usize> {
     let mut probe = it.clone();
     match probe.next() {
         Some((_, '\\')) => {
@@ -316,7 +317,7 @@ pub fn highlight_line(line: &str) -> Vec<Token> {
 
 #[cfg(test)]
 mod tests {
-    use super::{highlight_line, is_keyword, Kind, MAX_SCAN_CHARS};
+    use super::{Kind, MAX_SCAN_CHARS, highlight_line, is_keyword};
 
     fn kinds(line: &str) -> Vec<(String, Kind)> {
         highlight_line(line)
@@ -370,7 +371,10 @@ mod tests {
     #[test]
     fn test_lifetimes() {
         let k = kinds("fn f(x: &'a str) {}");
-        assert!(k.iter().any(|(w, kind)| *kind == Kind::Lifetime && w == "'a"));
+        assert!(
+            k.iter()
+                .any(|(w, kind)| *kind == Kind::Lifetime && w == "'a")
+        );
     }
 
     #[test]
@@ -383,7 +387,10 @@ mod tests {
     fn test_string_con_escape() {
         let k = kinds(r#"let s = "a\"b";"#);
         assert_eq!(k.len(), 2); // let + string
-        assert!(k.iter().any(|(w, kind)| *kind == Kind::String && w.starts_with('"')));
+        assert!(
+            k.iter()
+                .any(|(w, kind)| *kind == Kind::String && w.starts_with('"'))
+        );
     }
 
     #[test]
@@ -404,7 +411,10 @@ mod tests {
     #[test]
     fn test_numero_y_sufijo() {
         let k = kinds("let x = 42u32;");
-        assert!(k.iter().any(|(w, kind)| *kind == Kind::Number && w == "42u32"));
+        assert!(
+            k.iter()
+                .any(|(w, kind)| *kind == Kind::Number && w == "42u32")
+        );
         // Identificador con digitos no es numero
         let k2 = kinds("abc123");
         assert!(!k2.iter().any(|(_, kind)| *kind == Kind::Number));

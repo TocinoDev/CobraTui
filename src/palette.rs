@@ -7,11 +7,11 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph},
-    Frame,
 };
 
 /// Maximo de caracteres de la entrada (seguridad + rendimiento).
@@ -204,9 +204,7 @@ impl Palette {
         let after = &self.input[after_b..];
         let prompt = Span::styled(
             "> ",
-            Style::default()
-                .fg(accent)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
         );
         let cursor_style = Style::default().bg(Color::White).fg(Color::Black);
         let input_line = Line::from(vec![
@@ -224,9 +222,7 @@ impl Palette {
                 ListItem::new(Line::from(vec![
                     Span::styled(
                         format!("{:<10} ", s.label),
-                        Style::default()
-                            .fg(accent)
-                            .add_modifier(Modifier::BOLD),
+                        Style::default().fg(accent).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(s.hint, Style::default().fg(Color::DarkGray)),
                 ]))
@@ -340,7 +336,9 @@ impl Palette {
                 return PaletteAction::None;
             }
             KeyCode::Char(c) => {
-                if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+                if key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL)
                     || key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
                 {
                     return PaletteAction::None;
@@ -362,7 +360,7 @@ impl Palette {
 
 #[cfg(test)]
 mod tests {
-    use super::{Palette, PaletteAction, MAX_INPUT};
+    use super::{MAX_INPUT, Palette, PaletteAction};
 
     #[test]
     fn test_filtra_comandos() {

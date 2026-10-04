@@ -1,0 +1,15 @@
+# Endurecimiento del binario en Windows (mitiga DLL planting):
+# - `+crt-static`: enlaza la CRT estáticamente, el exe ya no depende
+#   de VCRUNTIME140.dll del sistema.
+# - `/DEPENDENTLOADFLAG:0x800` (`LOAD_LIBRARY_SEARCH_SYSTEM32`): las
+#   DLLs dependientes solo se buscan en System32.
+# - `control-flow-guard`: activa Control Flow Guard (/guard:cf).
+[target.x86_64-pc-windows-msvc]
+rustflags = [
+    "-C",
+    "target-feature=+crt-static",
+    "-C",
+    "link-arg=/DEPENDENTLOADFLAG:0x800",
+    "-C",
+    "control-flow-guard",
+]

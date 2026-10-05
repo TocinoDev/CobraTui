@@ -12,3 +12,18 @@ secrets*
 # Archivos temporales de los tests unitarios
 test_*.txt
 test_*.gitignore
+.tmp-cobra-*
+# Respaldos y temporales de editores
+*.bak
+*.orig
+*.rej
+*~
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+# Sistema operativo
+Thumbs.db
+desktop.ini
+.DS_Store

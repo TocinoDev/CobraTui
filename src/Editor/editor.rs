@@ -142,14 +142,29 @@ impl Editor {
         self.touch_cursor();
     }
 
-    pub fn new_file(&mut self, path: std::path::PathBuf) {
-        let _ = std::fs::write(&path, "");
+    /// Crea un archivo vacio en `path`. Con la misma guardia que `save`:
+    /// rechaza symlinks y destinos no regulares (evita truncar el destino
+    /// de un enlace plantado tras el modal de confirmacion) y propaga el
+    /// error de creacion en vez de fijar un estado fantasma.
+    pub fn new_file(&mut self, path: std::path::PathBuf) -> anyhow::Result<()> {
+        match std::fs::symlink_metadata(&path) {
+            Ok(m) => {
+                let ft = m.file_type();
+                if ft.is_symlink() || !ft.is_file() {
+                    return Err(anyhow::anyhow!("destino no es un archivo regular"));
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        std::fs::write(&path, "")?;
         self.buffer = Buffer::new("");
         self.current_path = Some(path);
         self.mark_saved();
         self.scroll_y = 0;
         self.scroll_x = 0;
         self.touch_cursor();
+        Ok(())
     }
 
     fn edit_insert(&mut self, ch: char) {
@@ -219,7 +234,7 @@ impl Editor {
             .as_ref()
             .and_then(|p| p.file_name())
             .and_then(|n| n.to_str())
-            .unwrap_or("Untitled");
+            .map_or_else(|| "Untitled".to_string(), crate::util::sanitize);
         let dirty_mark = if self.is_dirty() { " ●" } else { "" };
         let block = Block::default()
             .title(format!(" {title_name}{dirty_mark} "))
@@ -509,7 +524,10 @@ fn draw_notification(f: &mut Frame, area: Rect, msg: &str, accent: Color) {
     // Sanitiza antes de medir/dibujar: un \n en el mensaje no debe
     // romper el layout del popup.
     let msg = crate::util::sanitize(msg);
-    let popup_width = (msg.chars().count() as u16 + 4).min(area.width.saturating_sub(4));
+    let popup_width = u16::try_from(msg.chars().count())
+        .unwrap_or(u16::MAX)
+        .saturating_add(4)
+        .min(area.width.saturating_sub(4));
     let popup = centered_rect(popup_width, 3, area);
 
     f.render_widget(Clear, popup);
@@ -618,12 +636,39 @@ mod tests {
         let path = std::path::PathBuf::from("test_dirty_unit.txt");
         let _ = std::fs::remove_file(&path);
         let mut ed = Editor::new();
-        ed.new_file(path.clone());
+        ed.new_file(path.clone()).unwrap();
         assert!(!ed.is_dirty());
         ed.edit_insert('x');
         assert!(ed.is_dirty());
         ed.save_current().unwrap();
         assert!(!ed.is_dirty());
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_new_file_rechaza_symlink_y_falla_limpio() {
+        // Un symlink en la ruta no se trunca: se rechaza y el destino
+        // queda intacto. Sin privilegios para symlinks (Windows), se omite.
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("cobra_newlink_unit_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let real = dir.join("destino.txt");
+        std::fs::write(&real, "intacto").unwrap();
+        let link = dir.join("enlace.txt");
+        let _ = std::fs::remove_file(&link);
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(&real, &link).is_ok();
+        #[cfg(not(windows))]
+        let made = std::os::unix::fs::symlink(&real, &link).is_ok();
+        if !made {
+            return;
+        }
+        let mut ed = Editor::new();
+        assert!(ed.new_file(link.clone()).is_err());
+        assert!(ed.current_path.is_none(), "sin estado fantasma");
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "intacto");
+        let _ = std::fs::remove_file(&link);
+        let _ = std::fs::remove_file(&real);
+        let _ = std::fs::remove_dir(&dir);
     }
 }

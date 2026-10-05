@@ -1,9 +1,8 @@
 //! `CobraTUI` - binario principal.
 //! Menu principal sin picker. El picker 30/70 aparece solo al abrir proyecto/archivo.
 //!
-//! Nota: los casts `usize as u16` son seguros aqui porque las dimensiones
-//! del terminal ya vienen como `u16` en `crossterm`/`ratatui`.
-#![allow(clippy::cast_possible_truncation)]
+//! Nota: las conversiones `usize -> u16` usan `try_from` con saturacion:
+//! los conteos pueden superar 65535 y en release el overflow es abort.
 
 #[allow(non_snake_case)]
 mod Editor;
@@ -71,13 +70,13 @@ impl Pending {
             .as_ref()
             .and_then(|p| p.file_name())
             .and_then(|n| n.to_str())
-            .unwrap_or("archivo actual");
+            .map_or_else(|| "archivo actual".to_string(), util::sanitize);
         match self {
             Pending::OpenPath(p) => {
                 let target = p
                     .file_name()
                     .and_then(std::ffi::OsStr::to_str)
-                    .unwrap_or("archivo");
+                    .map_or_else(|| "archivo".to_string(), util::sanitize);
                 format!("'{name}' tiene cambios sin guardar. Abrir '{target}' los descarta.")
             }
             Pending::PickFile => {
@@ -90,7 +89,7 @@ impl Pending {
                 let target = p
                     .file_name()
                     .and_then(std::ffi::OsStr::to_str)
-                    .unwrap_or("archivo");
+                    .map_or_else(|| "archivo".to_string(), util::sanitize);
                 format!("'{target}' ya existe y no esta vacio. Sobrescribirlo lo vacia.")
             }
             Pending::ToMenu => {
@@ -280,8 +279,15 @@ fn request_new_file(editor: &mut CobraEditor, slot: &mut Option<Pending>) -> boo
         *slot = Some(Pending::OverwriteNew(path));
         return false;
     }
-    editor.new_file(path);
-    true
+    match editor.new_file(path) {
+        Ok(()) => true,
+        Err(e) => {
+            editor.notification = Some(format!("falla al crear: {e}"));
+            editor.notification_expires =
+                Some(std::time::Instant::now() + std::time::Duration::from_secs(3));
+            false
+        }
+    }
 }
 
 /// Ejecuta la accion pendiente tras confirmar (guardada o descartada).
@@ -315,9 +321,19 @@ fn apply_pending(
             }
         }
         Pending::OverwriteNew(path) => {
-            editor.new_file(path);
-            *mode = AppMode::Editing;
-            *focus = Focus::Editor;
+            // new_file revalida en el momento de escribir: la ventana
+            // TOCTOU del modal queda en microsegundos.
+            match editor.new_file(path) {
+                Ok(()) => {
+                    *mode = AppMode::Editing;
+                    *focus = Focus::Editor;
+                }
+                Err(e) => {
+                    editor.notification = Some(format!("falla al crear: {e}"));
+                    editor.notification_expires =
+                        Some(std::time::Instant::now() + std::time::Duration::from_secs(3));
+                }
+            }
         }
         Pending::ToMenu => {
             *mode = AppMode::Menu;
@@ -409,17 +425,17 @@ fn run_app<B: ratatui::backend::Backend>(
                         .as_ref()
                         .and_then(|p| p.file_name())
                         .and_then(std::ffi::OsStr::to_str)
-                        .map_or_else(
-                            || {
-                                picker
-                                    .current_dir
-                                    .file_name()
-                                    .and_then(std::ffi::OsStr::to_str)
-                                    .unwrap_or("No folder")
-                                    .to_owned()
-                            },
-                            str::to_owned,
-                        );
+                            .map_or_else(
+                                || {
+                                    picker
+                                        .current_dir
+                                        .file_name()
+                                        .and_then(std::ffi::OsStr::to_str)
+                                        .unwrap_or("No folder")
+                                        .to_owned()
+                                },
+                                util::sanitize,
+                            );
                     let mode_label = if *focus == Focus::Picker {
                         "EXPLORER"
                     } else {
@@ -454,7 +470,10 @@ fn run_app<B: ratatui::backend::Backend>(
 
                     if let Some(p) = pending.as_ref() {
                         let msg = p.describe(editor);
-                        let w = (msg.chars().count() as u16 + 6).min(area.width.saturating_sub(4));
+                        let w = u16::try_from(msg.chars().count())
+                            .unwrap_or(u16::MAX)
+                            .saturating_add(6)
+                            .min(area.width.saturating_sub(4));
                         let popup = centered_rect(w, 7, area);
                         f.render_widget(Clear, popup);
                         let block = Block::default()

@@ -169,7 +169,7 @@ impl Palette {
 
     /// Altura total de la caja (input + sugerencias).
     pub fn height(&self) -> u16 {
-        let n = self.suggestions().len().min(MAX_SUGGESTIONS) as u16;
+        let n = u16::try_from(self.suggestions().len().min(MAX_SUGGESTIONS)).unwrap_or(u16::MAX);
         3 + n
     }
 

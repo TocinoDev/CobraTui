@@ -31,9 +31,15 @@ pub fn atomic_write(
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| std::path::Path::new("."));
     let pid = std::process::id();
+    // Sal por llamada (nanos del reloj): el nombre no es predecible y un
+    // atacante no puede pre-crear los 16 candidatos para bloquear el
+    // guardado. El contador `n` distingue reintentos de la misma llamada.
+    let salt = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
     let mut slot: Option<(std::path::PathBuf, std::fs::File)> = None;
     for n in 0..MAX_TMP_ATTEMPTS {
-        let candidate = dir.join(format!(".tmp-cobra-{pid}-{n}"));
+        let candidate = dir.join(format!(".tmp-cobra-{pid}-{salt}-{n}"));
         match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -178,6 +184,20 @@ impl Buffer {
         if crate::util::is_reserved_device_name(fs_path) {
             return Err(anyhow::anyhow!("nombre de dispositivo reservado"));
         }
+        // Un symlink/junction con nombre inocuo podria apuntar a una ruta
+        // remota (bypass del rechazo UNC) o a un dispositivo: se resuelve
+        // y se valida el destino real. Queda una ventana TOCTOU minima
+        // entre esta comprobacion y la apertura (sin pausa humana).
+        if std::fs::symlink_metadata(fs_path).is_ok_and(|m| m.file_type().is_symlink()) {
+            let target = std::fs::canonicalize(fs_path)
+                .map_err(|_| anyhow::anyhow!("no se pudo resolver el enlace"))?;
+            if crate::util::is_remote(&target) {
+                return Err(anyhow::anyhow!("ruta remota no soportada"));
+            }
+            if crate::util::is_reserved_device_name(&target) {
+                return Err(anyhow::anyhow!("nombre de dispositivo reservado"));
+            }
+        }
         let mut file = std::fs::File::open(fs_path)?;
         if !file.metadata()?.is_file() {
             return Err(anyhow::anyhow!("no es un archivo regular"));
@@ -313,16 +333,16 @@ mod tests {
     #[test]
     fn test_save_colision_temporal_usa_siguiente() {
         let _guard = SAVE_TEST_LOCK.lock().unwrap();
-        // Pre-crea el primer candidato `.tmp-cobra-<pid>-0`: el save debe
-        // saltarlo (create_new falla con AlreadyExists) sin tocarlo.
+        // Un resto de otra ejecucion con el mismo prefijo no rompe el
+        // guardado (el nombre lleva sal impredecible) ni se toca.
         let path = "test_collision_unit.txt";
-        let first = format!(".tmp-cobra-{}-0", std::process::id());
+        let decoy = format!(".tmp-cobra-{}-decoy", std::process::id());
         let _ = std::fs::remove_file(path);
-        std::fs::write(&first, "marcador").unwrap();
+        std::fs::write(&decoy, "marcador").unwrap();
         Buffer::new("nuevo").save(path).unwrap();
         assert_eq!(std::fs::read_to_string(path).unwrap(), "nuevo");
-        assert_eq!(std::fs::read_to_string(&first).unwrap(), "marcador");
-        let _ = std::fs::remove_file(&first);
+        assert_eq!(std::fs::read_to_string(&decoy).unwrap(), "marcador");
+        let _ = std::fs::remove_file(&decoy);
         let _ = std::fs::remove_file(path);
         assert!(tmp_leftovers().is_empty());
     }
@@ -374,6 +394,44 @@ mod tests {
         assert!(Buffer::from_file("CON").is_err());
         assert!(Buffer::from_file("nul.txt").is_err());
         assert!(Buffer::from_file("COM1").is_err());
+    }
+
+    #[test]
+    fn test_from_file_enlaces() {
+        // Enlace colgante (sin destino): se rechaza al no poder resolverse.
+        // Enlace a archivo real: se abre (los legitimos siguen funcionando).
+        // En Windows crear symlinks exige privilegios: si falla, se omite.
+        let dir = std::env::temp_dir().join(format!("cobra_link_unit_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let real = dir.join("real.txt");
+        std::fs::write(&real, "contenido").unwrap();
+        let good = dir.join("bueno.txt");
+        let bad = dir.join("colgante.txt");
+        let _ = std::fs::remove_file(&good);
+        let _ = std::fs::remove_file(&bad);
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(&real, &good).is_ok()
+            && std::os::windows::fs::symlink_file("objetivo_inexistente_cobra", &bad).is_ok();
+        #[cfg(not(windows))]
+        let made = std::os::unix::fs::symlink(&real, &good).is_ok()
+            && std::os::unix::fs::symlink("objetivo_inexistente_cobra", &bad).is_ok();
+        if !made {
+            return;
+        }
+        assert_eq!(
+            Buffer::from_file(good.to_str().unwrap())
+                .unwrap()
+                .to_string(),
+            "contenido"
+        );
+        let err = Buffer::from_file(bad.to_str().unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("enlace"), "error: {err}");
+        let _ = std::fs::remove_file(&good);
+        let _ = std::fs::remove_file(&bad);
+        let _ = std::fs::remove_file(&real);
+        let _ = std::fs::remove_dir(&dir);
     }
 
     #[test]

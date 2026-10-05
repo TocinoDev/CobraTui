@@ -10,6 +10,11 @@ struct Entry {
     is_dir: bool,
 }
 
+/// Maximo de entradas listadas: colectar+ordenar un directorio gigante
+/// en el hilo de eventos congelaria la UI. Muy por encima de cualquier
+/// carpeta normal (System32 ronda 5k).
+const MAX_ENTRIES: usize = 10_000;
+
 pub struct Picker {
     files: Vec<Entry>,
     selected: usize,
@@ -112,6 +117,7 @@ impl Picker {
                     .cmp(&a.is_dir)
                     .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
             });
+            rest.truncate(MAX_ENTRIES);
             files.extend(rest);
         }
         self.files = files;

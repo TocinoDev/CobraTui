@@ -37,6 +37,13 @@ terminal o del sistema operativo en sí.
 | Cambios sin guardar | Modal `[S]/[D]/[Esc]` + marca `●` en el título | `src/main.rs`, `Editor` |
 | Terminal rota | Hook de panic + restore best-effort en todos los caminos | `src/main.rs` |
 | Preferencias corruptas | Tema con límite de 64 bytes, lista cerrada y guardado atómico | `src/themes.rs` |
+| Symlink/junction en apertura | Se resuelve y valida el destino (remoto/reservado se rechazan) | `oxide.rs` (`from_file`) |
+| Symlink en crear-nuevo (TOCTOU) | Guardia `symlink_metadata` en escritura + `Result` propagado | `editor.rs` (`new_file`) |
+| Reservados `CON `/`NUL:` | Normaliza espacios/puntos finales y sufijo `:` antes de comparar | `util.rs` |
+| Escape en titulo/barra/modal | `sanitize` en `file_name` mostrado | `main.rs`, `editor.rs` |
+| Explorer gigante (freeze UI) | Tope de 10.000 entradas | `picker.rs` |
+| Temporales predecibles | Sal de nanos por llamada | `oxide.rs` (`atomic_write`) |
+| Casts con perdida | `try_from` + saturacion, sin `allow` global | `main.rs`, `editor.rs`, `palette.rs` |
 | Secretos en repo | Sin `.env`/claves/tokens; `.gitignore` excluye `.env*`, `*.pem`, `*.key`, `credentials*` | `.gitignore` |
 
 Sin `unwrap()`/`expect()` en el código propio fuera de tests (solo en

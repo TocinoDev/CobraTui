@@ -31,12 +31,20 @@ pub fn is_remote(path: &std::path::Path) -> bool {
 /// `true` si el nombre final de `path` es un dispositivo reservado de
 /// Windows (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`),
 /// con o sin extensión (`NUL.txt` también está reservado). Insensible
-/// a mayúsculas. Evita abrir dispositivos al leer archivos.
+/// a mayúsculas. Win32 pliega al dispositivo aunque haya espacios o
+/// puntos finales (`CON `, `NUL.`) o sufijo `:` (`CON:`), así que se
+/// normalizan antes de comparar. Evita abrir dispositivos al leer archivos.
 pub fn is_reserved_device_name(path: &std::path::Path) -> bool {
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
         return false;
     };
-    let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
+    let no_drive = name.split(':').next().unwrap_or(name);
+    let trimmed = no_drive.trim_end_matches([' ', '.']);
+    let stem = trimmed
+        .split('.')
+        .next()
+        .unwrap_or(trimmed)
+        .to_ascii_uppercase();
     matches!(
         stem.as_str(),
         "CON"
@@ -89,6 +97,9 @@ mod tests {
         use std::path::Path;
         for name in [
             "CON", "con", "NUL", "nul.txt", "COM1", "com9", "LPT1", "lpt9.dat", "PRN", "AUX",
+            // Win32 pliega estas formas al dispositivo aunque el stem
+            // literal no iguale: espacio/punto final o sufijo ':'.
+            "CON ", "NUL:", "con. ", "COM1:", "LPT9.",
         ] {
             assert!(is_reserved_device_name(Path::new(name)), "{name}");
             assert!(is_reserved_device_name(&Path::new("dir").join(name)));

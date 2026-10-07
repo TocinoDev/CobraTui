@@ -176,11 +176,57 @@ impl Editor {
     }
 
     fn edit_insert(&mut self, ch: char) {
+        // Auto-cierre: `(`, `[`, `{` insertan su pareja y el cursor
+        // queda en el medio. `"` y backtick igual, salvo overtype
+        // (si el cierre ya esta a la derecha, se salta).
+        // `'` no se empareja: rompería lifetimes (`'a`) y runas.
+        const PAIRS: &[(char, char)] = &[('(', ')'), ('[', ']'), ('{', '}')];
+        if let Some(&(_, close)) = PAIRS.iter().find(|(o, _)| *o == ch) {
+            self.buffer.insert_char(ch);
+            self.buffer.insert_char(close);
+            self.buffer.move_cursor(-1, 0);
+            self.mark_dirty();
+            return;
+        }
+        if matches!(ch, ')' | ']' | '}' | '"' | '\'' | '`')
+            && self.buffer.char_after_cursor() == Some(ch)
+        {
+            self.buffer.move_cursor(1, 0);
+            return;
+        }
+        if ch == '"' || ch == '`' {
+            self.buffer.insert_char(ch);
+            self.buffer.insert_char(ch);
+            self.buffer.move_cursor(-1, 0);
+            self.mark_dirty();
+            return;
+        }
         self.buffer.insert_char(ch);
         self.mark_dirty();
     }
 
     fn edit_delete(&mut self) {
+        // Si el cursor esta entre un par vacio (`(|)`), Backspace
+        // borra ambos de una vez.
+        const PAIRS: &[(char, char)] = &[
+            ('(', ')'),
+            ('[', ']'),
+            ('{', '}'),
+            ('"', '"'),
+            ('\'', '\''),
+            ('`', '`'),
+        ];
+        if let (Some(o), Some(c)) = (
+            self.buffer.char_before_cursor(),
+            self.buffer.char_after_cursor(),
+        ) && PAIRS.contains(&(o, c))
+        {
+            self.buffer.move_cursor(1, 0);
+            self.buffer.delete_char();
+            self.buffer.delete_char();
+            self.mark_dirty();
+            return;
+        }
         self.buffer.delete_char();
         self.mark_dirty();
     }
@@ -702,5 +748,61 @@ mod tests {
         let _ = std::fs::remove_file(&link);
         let _ = std::fs::remove_file(&real);
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn test_autocierre_pares_y_overtype() {
+        let mut ed = Editor::new();
+        ed.edit_insert('(');
+        assert_eq!(ed.buffer.to_string(), "()");
+        assert_eq!(ed.buffer.cursor(), (1, 0));
+        // Overtype: el cierre ya esta a la derecha, se salta sin duplicar.
+        ed.edit_insert(')');
+        assert_eq!(ed.buffer.to_string(), "()");
+        assert_eq!(ed.buffer.cursor(), (2, 0));
+        // Corchetes y llaves igual.
+        let mut ed2 = Editor::new();
+        ed2.edit_insert('[');
+        ed2.edit_insert('{');
+        assert_eq!(ed2.buffer.to_string(), "[{}]");
+        assert_eq!(ed2.buffer.cursor(), (2, 0));
+    }
+
+    #[test]
+    fn test_comillas_par_y_simple() {
+        let mut ed = Editor::new();
+        ed.edit_insert('"');
+        assert_eq!(ed.buffer.to_string(), "\"\"");
+        assert_eq!(ed.buffer.cursor(), (1, 0));
+        ed.edit_insert('"'); // overtype
+        assert_eq!(ed.buffer.to_string(), "\"\"");
+        assert_eq!(ed.buffer.cursor(), (2, 0));
+        ed.edit_insert('`');
+        assert_eq!(ed.buffer.to_string(), "\"\"``");
+        // Comilla simple NO se empareja (lifetimes `'a`, runas).
+        let mut ed2 = Editor::new();
+        for c in "'a".chars() {
+            ed2.edit_insert(c);
+        }
+        assert_eq!(ed2.buffer.to_string(), "'a");
+        ed2.edit_insert('\'');
+        assert_eq!(ed2.buffer.to_string(), "'a'");
+    }
+
+    #[test]
+    fn test_backspace_borra_par_vacio() {
+        let mut ed = Editor::new();
+        ed.edit_insert('(');
+        ed.edit_delete();
+        assert_eq!(ed.buffer.to_string(), "");
+        assert_eq!(ed.buffer.cursor(), (0, 0));
+        // Par no vacio: borra normal, de a un char.
+        let mut ed2 = Editor::new();
+        for c in "(x)".chars() {
+            ed2.edit_insert(c);
+        }
+        assert_eq!(ed2.buffer.to_string(), "(x)");
+        ed2.edit_delete();
+        assert_eq!(ed2.buffer.to_string(), "(x");
     }
 }

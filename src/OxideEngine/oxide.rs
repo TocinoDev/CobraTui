@@ -134,6 +134,19 @@ impl Buffer {
             .map_or(line.len(), |(i, _)| i)
     }
 
+    /// Char a la derecha del cursor, si hay (para overtype de cierres).
+    pub fn char_after_cursor(&self) -> Option<char> {
+        self.lines[self.cursor_y].chars().nth(self.cursor_x)
+    }
+
+    /// Char a la izquierda del cursor, si hay (para borrado de pares).
+    pub fn char_before_cursor(&self) -> Option<char> {
+        if self.cursor_x == 0 {
+            return None;
+        }
+        self.lines[self.cursor_y].chars().nth(self.cursor_x - 1)
+    }
+
     /// Inserta un `char` en la posición del cursor y avanza `cursor_x`.
     /// Opera in-place sobre el `String` (sin clonar la linea).
     pub fn insert_char(&mut self, ch: char) {

@@ -48,7 +48,7 @@ impl Menu {
     /// Menu principal a pantalla completa, sin picker.
     pub fn draw(&self, f: &mut Frame, area: Rect) {
         let block = Block::default()
-            .title(" CobraTUI v0.1.0 ")
+            .title(" CobraTUI v0.1.1 ")
             .title_alignment(Alignment::Center)
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)

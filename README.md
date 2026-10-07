@@ -25,7 +25,7 @@ Editor de texto en terminal: ligero, rápido y sin distracciones. Escrito en Rus
 
 ## 📦 Instalación
 
-**Opción A — zip listo (Windows 64-bit):** descargá `CobraTUI-v0.1.0-win64.zip` de
+**Opción A — zip listo (Windows 64-bit):** descargá `CobraTUI-v0.1.1-win64.zip` de
 [Releases](https://github.com/TocinoDev/CobraTui/releases), descomprimí y ejecutá `CobraTUI.exe`.
 
 **Opción B — compilar desde fuente** (recomendado si desconfiás del binario: así verificás vos el código):
@@ -100,7 +100,7 @@ docs/                  # Documentación detallada (arquitectura, uso, seguridad�
 Cada release incluye `SHA256SUMS.txt` junto al zip. En Windows:
 
 ```sh
-certutil -hashfile CobraTUI-v0.1.0-win64.zip SHA256
+certutil -hashfile CobraTUI-v0.1.1-win64.zip SHA256
 ```
 
 El hash debe coincidir con el publicado. Si no coincide, no lo ejecutes.
@@ -108,6 +108,13 @@ El hash debe coincidir con el publicado. Si no coincide, no lo ejecutes.
 ## 📌 Estado
 
 Proyecto en desarrollo activo. Funciona para edición diaria de archivos de texto y código. Ver [`docs/`](docs/) para arquitectura y decisiones.
+
+## 🆕 Novedades en v0.1.1
+
+- **Resaltado multilenguaje**: Rust, Go, Python, JS/TS y C con detección por extensión.
+- **Auto-cierre de pares**: `()`, `[]`, `{}` y comillas, con overtype y borrado doble.
+- **Explorer con superpoderes**: crear archivos (`Ctrl+A`), borrar con confirmación (`Ctrl+D`) y refresco en tiempo real.
+- **Seguridad endurecida**: validación de symlinks al abrir/crear, filtro de dispositivos ampliado y binario verificado (sin VCRUNTIME, CFG activo).
 
 ## 🤖 Transparencia sobre IA
 

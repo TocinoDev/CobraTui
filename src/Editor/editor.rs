@@ -150,6 +150,19 @@ impl Editor {
         self.touch_cursor();
     }
 
+    /// Cierra el archivo actual sin guardar (p. ej. se borro en disco
+    /// desde el explorer): buffer vacio, sin ruta, marca limpia.
+    pub fn close_file(&mut self) {
+        self.buffer = Buffer::new("");
+        self.current_path = None;
+        self.mark_saved();
+        self.scroll_y = 0;
+        self.scroll_x = 0;
+        self.notification = None;
+        self.notification_expires = None;
+        self.touch_cursor();
+    }
+
     /// Crea un archivo vacio en `path`. Con la misma guardia que `save`:
     /// rechaza symlinks y destinos no regulares (evita truncar el destino
     /// de un enlace plantado tras el modal de confirmacion) y propaga el
@@ -804,5 +817,20 @@ mod tests {
         assert_eq!(ed2.buffer.to_string(), "(x)");
         ed2.edit_delete();
         assert_eq!(ed2.buffer.to_string(), "(x");
+    }
+
+    #[test]
+    fn test_close_file_limpia_estado() {
+        let mut ed = Editor::new();
+        let path = std::path::PathBuf::from("test_close_unit.txt");
+        let _ = std::fs::remove_file(&path);
+        ed.new_file(path.clone()).unwrap();
+        ed.edit_insert('x');
+        assert!(ed.is_dirty());
+        ed.close_file();
+        assert!(ed.current_path.is_none());
+        assert!(!ed.is_dirty());
+        assert_eq!(ed.buffer.to_string(), "");
+        let _ = std::fs::remove_file(&path);
     }
 }

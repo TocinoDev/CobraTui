@@ -31,7 +31,7 @@ use ratatui::{
 use std::io;
 
 use Editor::editor::Editor as CobraEditor;
-use Editor::picker::Picker;
+use Editor::picker::{CreateResult, Picker};
 use Menu::menu::Menu as CobraMenu;
 use OxideEngine::oxide::Buffer;
 use palette::{Palette, PaletteAction};
@@ -210,8 +210,7 @@ fn open_folder_dialog(picker: &mut Picker, editor: &mut CobraEditor) -> bool {
         if reject_remote(editor, &path) {
             return false;
         }
-        picker.current_dir = path;
-        picker.reload();
+        picker.set_dir(path);
         return true;
     }
     false
@@ -369,6 +368,9 @@ fn run_app<B: ratatui::backend::Backend>(
             let inst = 1.0 / dt;
             fps = fps * 0.9 + inst * 0.1;
         }
+        // Refresco en tiempo real del explorer (barato: un metadata
+        // cada 500ms; sin syscalls por frame).
+        picker.poll_refresh();
         match mode {
             AppMode::Menu => {
                 terminal.draw(|f| {
@@ -648,6 +650,49 @@ fn run_app<B: ratatui::backend::Backend>(
                         }
                     }
                     AppMode::Editing => {
+                        // Entrada de nombre (Ctrl+A): captura todo hasta
+                        // Enter/Esc, antes que cualquier otro atajo.
+                        if picker.creating {
+                            match picker.create_key(key) {
+                                CreateResult::Pending => {}
+                                CreateResult::Invalid => {
+                                    editor.notification = Some(
+                                        "nombre inválido (solo nombre, sin rutas)".to_string(),
+                                    );
+                                    editor.notification_expires = Some(
+                                        std::time::Instant::now()
+                                            + std::time::Duration::from_secs(2),
+                                    );
+                                }
+                                CreateResult::Cancelled => {}
+                                CreateResult::Confirmed(path) => {
+                                    if needs_overwrite_confirm(&path) {
+                                        pending = Some(Pending::OverwriteNew(path));
+                                    } else {
+                                        match editor.new_file(path.clone()) {
+                                            Ok(()) => {
+                                                picker.reload();
+                                                if let Some(n) =
+                                                    path.file_name().and_then(|n| n.to_str())
+                                                {
+                                                    picker.select_name(n);
+                                                }
+                                                *focus = Focus::Editor;
+                                            }
+                                            Err(e) => {
+                                                editor.notification =
+                                                    Some(format!("falla al crear: {e}"));
+                                                editor.notification_expires = Some(
+                                                    std::time::Instant::now()
+                                                        + std::time::Duration::from_secs(3),
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            continue;
+                        }
                         if key.code == KeyCode::Char('k')
                             && key.modifiers.contains(KeyModifiers::CONTROL)
                         {
@@ -684,13 +729,52 @@ fn run_app<B: ratatui::backend::Backend>(
                         }
 
                         if *focus == Focus::Picker {
+                            // Ctrl+D borra la entrada seleccionada
+                            // (archivos siempre, carpetas solo vacias).
+                            if matches!(key.code, KeyCode::Char('d' | 'D'))
+                                && key.modifiers.contains(KeyModifiers::CONTROL)
+                            {
+                                if picker.selected_file().is_some_and(|n| n != "..") {
+                                    match picker.remove_selected() {
+                                        Ok(full) => {
+                                            if editor.current_path.as_ref() == Some(&full) {
+                                                editor.close_file();
+                                            }
+                                            let name = full
+                                                .file_name()
+                                                .and_then(|n| n.to_str())
+                                                .unwrap_or("archivo");
+                                            editor.notification =
+                                                Some(format!("eliminado: {name}"));
+                                            editor.notification_expires = Some(
+                                                std::time::Instant::now()
+                                                    + std::time::Duration::from_secs(2),
+                                            );
+                                        }
+                                        Err(e) => {
+                                            editor.notification = Some(e);
+                                            editor.notification_expires = Some(
+                                                std::time::Instant::now()
+                                                    + std::time::Duration::from_secs(3),
+                                            );
+                                        }
+                                    }
+                                }
+                                continue;
+                            }
+                            // Ctrl+A pide el nombre para crear un archivo.
+                            if matches!(key.code, KeyCode::Char('a' | 'A'))
+                                && key.modifiers.contains(KeyModifiers::CONTROL)
+                            {
+                                picker.begin_create();
+                                continue;
+                            }
                             match key.code {
                                 KeyCode::Up => picker.move_up(),
                                 KeyCode::Down => picker.move_down(),
                                 KeyCode::Backspace => {
                                     if let Some(parent) = picker.current_dir.parent() {
-                                        picker.current_dir = parent.to_path_buf();
-                                        picker.reload();
+                                        picker.set_dir(parent.to_path_buf());
                                     }
                                 }
                                 KeyCode::Enter => {
@@ -707,8 +791,7 @@ fn run_app<B: ratatui::backend::Backend>(
                                             continue;
                                         }
                                         if full.is_dir() {
-                                            picker.current_dir = full;
-                                            picker.reload();
+                                            picker.set_dir(full);
                                         } else if editor.is_dirty() {
                                             pending = Some(Pending::OpenPath(full));
                                         } else if open_buffer_at(editor, full) {

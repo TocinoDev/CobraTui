@@ -1,6 +1,6 @@
 //! Editor de texto `CobraTUI`.
 use crate::OxideEngine::oxide::Buffer;
-use crate::highlight::{self, Kind};
+use crate::highlight::{self, Kind, Lang};
 use crate::themes::{self, Theme};
 use crate::util::centered_rect;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -52,6 +52,14 @@ impl Editor {
 
     pub fn theme_name(&self) -> &'static str {
         self.theme().name
+    }
+
+    /// Idioma para resaltado segun la extension del archivo actual.
+    /// Sin archivo (o extension desconocida) cae a Rust.
+    fn lang(&self) -> Lang {
+        self.current_path
+            .as_deref()
+            .map_or(Lang::Rust, highlight::detect)
     }
 
     /// Cambia el tema por indice validado. Devuelve `false` si es invalido.
@@ -270,6 +278,7 @@ impl Editor {
             scroll_y: self.scroll_y,
             focused,
             show_block,
+            lang: self.lang(),
         };
         let lines = self.text_lines(&theme, &ctx);
         let paragraph = Paragraph::new(lines).block(block);
@@ -344,6 +353,7 @@ struct ViewCtx {
     scroll_y: usize,
     focused: bool,
     show_block: bool,
+    lang: Lang,
 }
 
 /// Sanitizado solo para display con `util::sanitize` (preserva `\t`,
@@ -409,7 +419,7 @@ fn render_text_line<'a>(
         };
         let nchars = line.chars().count();
         if ctx.cx >= nchars {
-            let mut spans = code_spans(line, theme, text_style, None, view);
+            let mut spans = code_spans_lang(line, theme, text_style, None, view, ctx.lang);
             spans.insert(0, prefix);
             if ctx.vis_w > 0 {
                 spans.push(Span::styled(" ", style));
@@ -418,11 +428,18 @@ fn render_text_line<'a>(
         }
         let b0 = byte_idx(line, ctx.cx);
         let b1 = byte_idx(line, ctx.cx + 1);
-        let mut spans = code_spans(line, theme, text_style, Some((b0, b1, style)), view);
+        let mut spans = code_spans_lang(
+            line,
+            theme,
+            text_style,
+            Some((b0, b1, style)),
+            view,
+            ctx.lang,
+        );
         spans.insert(0, prefix);
         return Line::from(spans);
     }
-    let mut spans = code_spans(line, theme, text_style, None, view);
+    let mut spans = code_spans_lang(line, theme, text_style, None, view, ctx.lang);
     spans.insert(0, prefix);
     Line::from(spans)
 }
@@ -459,17 +476,32 @@ fn style_for(kind: Kind, theme: &Theme) -> Style {
     }
 }
 
-/// Emite los `Span`s de una linea con resaltado. `cursor` es el rango de
-/// bytes del caracter bajo el cursor con su estilo: lo parte del tramo
-/// que lo contenga. `view` recorta a la ventana horizontal visible.
-/// Todos los cortes son fronteras UTF-8 (vienen del escaner o de
-/// `char_indices`).
+/// Emite los `Span`s de una linea con resaltado en Rust.
+/// Solo se usa en tests; el render usa `code_spans_lang` con el idioma
+/// del archivo.
+#[cfg(test)]
 fn code_spans<'a>(
     line: &'a str,
     theme: &Theme,
     text_style: Style,
     cursor: Option<(usize, usize, Style)>,
     view: (usize, usize),
+) -> Vec<Span<'a>> {
+    code_spans_lang(line, theme, text_style, cursor, view, Lang::Rust)
+}
+
+/// Emite los `Span`s de una linea con resaltado. `cursor` es el rango de
+/// bytes del caracter bajo el cursor con su estilo: lo parte del tramo
+/// que lo contenga. `view` recorta a la ventana horizontal visible.
+/// Todos los cortes son fronteras UTF-8 (vienen del escaner o de
+/// `char_indices`).
+fn code_spans_lang<'a>(
+    line: &'a str,
+    theme: &Theme,
+    text_style: Style,
+    cursor: Option<(usize, usize, Style)>,
+    view: (usize, usize),
+    lang: Lang,
 ) -> Vec<Span<'a>> {
     fn push_range<'a>(
         spans: &mut Vec<Span<'a>>,
@@ -503,7 +535,7 @@ fn code_spans<'a>(
     let (vs, ve) = view;
     let mut spans = Vec::new();
     let mut pos = vs;
-    for t in highlight::highlight_line(line) {
+    for t in highlight::highlight_line_lang(line, lang) {
         if t.end <= vs {
             continue;
         }

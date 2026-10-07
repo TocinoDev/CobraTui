@@ -59,6 +59,8 @@ enum Pending {
     OverwriteNew(std::path::PathBuf),
     /// Volver al menu (Esc).
     ToMenu,
+    /// Borrar esta ruta (Ctrl+D), con confirmacion en modal.
+    DeletePath(std::path::PathBuf),
     /// Salir de la app (Ctrl+Q o Esc final).
     Quit,
 }
@@ -95,6 +97,13 @@ impl Pending {
             Pending::ToMenu => {
                 format!("'{name}' tiene cambios sin guardar. Volver al menu los descarta.")
             }
+            Pending::DeletePath(p) => {
+                let target = p
+                    .file_name()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .map_or_else(|| "archivo".to_string(), util::sanitize);
+                format!("'{target}' se eliminará permanentemente. No se puede deshacer.")
+            }
             Pending::Quit => {
                 format!("'{name}' tiene cambios sin guardar. Salir los descarta.")
             }
@@ -105,6 +114,7 @@ impl Pending {
     fn hint(&self) -> &'static str {
         match self {
             Pending::OverwriteNew(_) => "[S] Overwrite   [D/Esc] Cancel",
+            Pending::DeletePath(_) => "[D] Delete   [Esc] Cancel",
             _ => "[S] Save   [D] Discard   [Esc] Cancel",
         }
     }
@@ -294,6 +304,7 @@ fn request_new_file(editor: &mut CobraEditor, slot: &mut Option<Pending>) -> boo
 fn apply_pending(
     pending: Pending,
     editor: &mut CobraEditor,
+    picker: &mut Picker,
     focus: &mut Focus,
     mode: &mut AppMode,
     slot: &mut Option<Pending>,
@@ -336,6 +347,38 @@ fn apply_pending(
         }
         Pending::ToMenu => {
             *mode = AppMode::Menu;
+        }
+        Pending::DeletePath(path) => {
+            // El refresco en tiempo real pudo mover la seleccion mientras
+            // el modal esperaba: solo borrar si la ruta sigue seleccionada.
+            let same = picker
+                .selected_file()
+                .is_some_and(|n| picker.current_dir.join(n) == path);
+            if !same {
+                editor.notification = Some("ya no está seleccionado: no se borró nada".to_string());
+                editor.notification_expires =
+                    Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
+            } else {
+                match picker.remove_selected() {
+                    Ok(full) => {
+                        if editor.current_path.as_ref() == Some(&full) {
+                            editor.close_file();
+                        }
+                        let name = full
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("archivo");
+                        editor.notification = Some(format!("eliminado: {name}"));
+                        editor.notification_expires =
+                            Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
+                    }
+                    Err(e) => {
+                        editor.notification = Some(e);
+                        editor.notification_expires =
+                            Some(std::time::Instant::now() + std::time::Duration::from_secs(3));
+                    }
+                }
+            }
         }
         Pending::Quit => {
             return true;
@@ -514,9 +557,12 @@ fn run_app<B: ratatui::backend::Backend>(
                             pending = None;
                         }
                         KeyCode::Char('s' | 'S') => {
-                            if editor.save_current().is_ok() {
+                            // En el modal de borrado S no hace nada: solo
+                            // D confirma y Esc cancela.
+                            if matches!(pending, Some(Pending::DeletePath(_))) {
+                            } else if editor.save_current().is_ok() {
                                 if let Some(p) = pending.take()
-                                    && apply_pending(p, editor, focus, mode, &mut pending)
+                                    && apply_pending(p, editor, picker, focus, mode, &mut pending)
                                 {
                                     return Ok(());
                                 }
@@ -526,10 +572,11 @@ fn run_app<B: ratatui::backend::Backend>(
                         }
                         KeyCode::Char('d' | 'D') => {
                             // Sobrescribir solo con S explicita; D cancela.
+                            // Borrar (DeletePath) solo se confirma con D.
                             if matches!(pending, Some(Pending::OverwriteNew(_))) {
                                 pending = None;
                             } else if let Some(p) = pending.take()
-                                && apply_pending(p, editor, focus, mode, &mut pending)
+                                && apply_pending(p, editor, picker, focus, mode, &mut pending)
                             {
                                 return Ok(());
                             }
@@ -729,36 +776,16 @@ fn run_app<B: ratatui::backend::Backend>(
                         }
 
                         if *focus == Focus::Picker {
-                            // Ctrl+D borra la entrada seleccionada
+                            // Ctrl+D pide confirmacion en modal antes de borrar
                             // (archivos siempre, carpetas solo vacias).
                             if matches!(key.code, KeyCode::Char('d' | 'D'))
                                 && key.modifiers.contains(KeyModifiers::CONTROL)
                             {
-                                if picker.selected_file().is_some_and(|n| n != "..") {
-                                    match picker.remove_selected() {
-                                        Ok(full) => {
-                                            if editor.current_path.as_ref() == Some(&full) {
-                                                editor.close_file();
-                                            }
-                                            let name = full
-                                                .file_name()
-                                                .and_then(|n| n.to_str())
-                                                .unwrap_or("archivo");
-                                            editor.notification =
-                                                Some(format!("eliminado: {name}"));
-                                            editor.notification_expires = Some(
-                                                std::time::Instant::now()
-                                                    + std::time::Duration::from_secs(2),
-                                            );
-                                        }
-                                        Err(e) => {
-                                            editor.notification = Some(e);
-                                            editor.notification_expires = Some(
-                                                std::time::Instant::now()
-                                                    + std::time::Duration::from_secs(3),
-                                            );
-                                        }
-                                    }
+                                if let Some(name) = picker.selected_file().cloned()
+                                    && name != ".."
+                                {
+                                    pending =
+                                        Some(Pending::DeletePath(picker.current_dir.join(&name)));
                                 }
                                 continue;
                             }
@@ -847,6 +874,7 @@ fn run_app<B: ratatui::backend::Backend>(
 #[cfg(test)]
 mod tests {
     use super::needs_overwrite_confirm;
+    use super::{CobraEditor, Pending};
 
     fn test_path(name: &str) -> std::path::PathBuf {
         let mut p = std::env::temp_dir();
@@ -870,5 +898,15 @@ mod tests {
 
         let _ = std::fs::remove_file(&empty);
         let _ = std::fs::remove_file(&full);
+    }
+
+    #[test]
+    fn test_delete_modal_avisa_irreversible() {
+        let ed = CobraEditor::new();
+        let p = Pending::DeletePath(std::path::PathBuf::from("nota.txt"));
+        let msg = p.describe(&ed);
+        assert!(msg.contains("nota.txt"), "{msg}");
+        assert!(msg.contains("No se puede deshacer"), "{msg}");
+        assert_eq!(p.hint(), "[D] Delete   [Esc] Cancel");
     }
 }

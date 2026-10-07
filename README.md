@@ -59,6 +59,8 @@ Al abrir verás el menú principal. Abrí una carpeta o archivo para entrar al e
 | `Ctrl+S`           | Guardar (atómico)                   |
 | `Ctrl+Q`           | Salir (avisa si hay cambios sin guardar) |
 | `Tab`              | Cambiar foco explorer ↔ editor      |
+| `Ctrl+A`           | Nuevo archivo en el explorer (pide nombre) |
+| `Ctrl+D`           | Borrar seleccionado (pide confirmación) |
 | `↑↓` / `Enter`     | Navegar y abrir en el explorer      |
 | `Backspace`        | Subir carpeta (en explorer)         |
 | `Esc`              | Volver al menú                      |
